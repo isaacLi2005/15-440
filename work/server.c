@@ -9,6 +9,7 @@
 #include <err.h>
 
 #include <stdbool.h>
+#include <errno.h>
 
 #define MAXMSGLEN 100 
 
@@ -23,7 +24,7 @@ int main(int argc, char** argv) {
 
     // Get the server port that we will listen on from the environment 
     // variable. In the case of failure set it to a default. 
-    serverport = getenv("serverport15440")
+    serverport = getenv("serverport15440");
     if (serverport != NULL) {
         port = (unsigned short)(atoi(serverport));
     } else {
@@ -65,12 +66,13 @@ int main(int argc, char** argv) {
 
         // Loops while we still are able to read bytes into buf. 
         while ( (rv = recv(sessfd, buf, MAXMSGLEN, 0)) > 0) {
-            buf[rv] = 0; // Adds a null character to make string inputs.  
+            write(STDOUT_FILENO, buf, rv);
         }
         if (rv < 0) {
             err(1, 0);
-            close(sessfd);
         } 
+        close(sessfd);
+
     }
 
     close(sockfd);
