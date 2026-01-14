@@ -15,6 +15,10 @@
 
 // Recall: argc is number or arguments, argv is the array of char* strings. 
 int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+
+
     char buf[MAXMSGLEN+1];
     char *serverport; 
     unsigned short port; 
