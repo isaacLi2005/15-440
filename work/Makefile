@@ -1,16 +1,23 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -g -fPIC -I../include
-LDFLAGS_SO = -shared -ldl
-# You likely won't need -L../lib yet for CP1 unless you directly link to libdirtree,
-# but keeping include path is correct.
+CC := gcc
+CFLAGS := -Wall -Wextra -O2 -g -fPIC
+SO_LDFLAGS := -shared
+LDLIBS := -ldl
 
-all: server mylib.so
+.PHONY: all clean
 
-server: server.c
-	$(CC) -Wall -Wextra -g -o server server.c
+all: mylib.so server
 
-mylib.so: mylib.c
-	$(CC) $(CFLAGS) $(LDFLAGS_SO) -o mylib.so mylib.c
+mylib.o: mylib.c
+	gcc -Wall -fPIC -DPIC -c mylib.c
+
+mylib.so: mylib.o
+	gcc -shared -nostartfiles -o mylib.so mylib.o -ldl
+
+server.o: server.c
+	$(CC) -Wall -Wextra -O2 -g -c -o $@ $<
+
+server: server.o
+	$(CC) -o $@ $^
 
 clean:
-	rm -f server mylib.so
+	rm -f *.o mylib.so server
