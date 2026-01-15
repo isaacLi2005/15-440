@@ -44,6 +44,9 @@ off_t (*orig_lseek)(int fd, off_t offset, int whence);
 int (*orig_stat)(const char *restrict path, struct stat *restrict statbuf);
 int (*orig_unlink)(const char *pathname);
 ssize_t (*orig_read)(int fd, void *buf, size_t count);
+struct dirtreenode* (*orig_getdirtree)(const char *path);
+void (*orig_freedirtree)(struct dirtreenode *dt);
+
 
 
 // This is our replacement for the open function from libc.
@@ -104,6 +107,20 @@ int unlink(const char *pathname) {
 	return orig_unlink(pathname);
 }
 
+struct dirtreenode* getdirtree(const char *path) {
+    const char *msg = "getdirtree\n";
+
+    send(sockfd, msg, strlen(msg), 0);
+    return orig_getdirtree(path);
+}
+
+void freedirtree(struct dirtreenode *dt) {
+    const char *msg = "freedirtree\n";
+	
+    send(sockfd, msg, strlen(msg), 0);
+    orig_freedirtree(dt);
+}
+
 
 
 // This function is automatically called when program is started
@@ -116,6 +133,8 @@ void _init(void) {
 	orig_stat = dlsym(RTLD_NEXT, "stat");
 	orig_unlink = dlsym(RTLD_NEXT, "unlink");
 	orig_read = dlsym(RTLD_NEXT, "read");
+	orig_getdirtree  = dlsym(RTLD_NEXT, "getdirtree");
+	orig_freedirtree = dlsym(RTLD_NEXT, "freedirtree");
 
 
 
