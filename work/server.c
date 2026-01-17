@@ -19,7 +19,7 @@
 
 #define MAXMSGLEN 100 
 
-enum {OP_OPEN = 1, OP_CLOSE = 3};
+enum {OP_OPEN = 1, OP_WRITE = 2, OP_CLOSE = 3};
 
 static int recv_all(int fd, void* buf, size_t n) {
     uint8_t* p = (uint8_t*)buf; 
@@ -79,12 +79,6 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
     }
 
 
-    printf("OPEN received:\n");
-    printf("flags = 0x%x\n", flags);
-    printf("mode = 0%o\n", mode);
-    printf("path = \"%s\"\n", pathname);
-    fflush(stdout);
-
     int fd; 
     if (flags & O_CREAT) {
         fd = open(pathname, flags, (mode_t)mode);
@@ -100,15 +94,67 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
         ret_errno = 0;
     }
 
-    printf("Server open fd: %d \n", ret_fd);
-    printf("Server open errno: %d \n", ret_errno); 
-
     uint32_t fd_network = htonl((uint32_t)ret_fd);
     uint32_t errno_network = htonl((uint32_t)ret_errno);
 
     // Open response: [fd, 4][errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(8);
     memcpy(response_buf, &fd_network, 4);
+    memcpy(response_buf + 4, &errno_network, 4); 
+
+    if (send_all(sessfd, response_buf, 8) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
+}
+
+static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    // [server_fd, 4][n_bytes, 4][write_buf, n_bytes]
+    if (payload_len < 8) {
+        fprintf(stderr, "Write payload too short: %u \n", payload_len); 
+        return -1; 
+    }
+
+    uint32_t server_fd_network, n_bytes_network; 
+    memcpy(&server_fd_network, payload, 4); 
+    memcpy(&n_bytes_network, payload + 4, 4);
+
+    int32_t server_fd = (int32_t)ntohl(server_fd_network); 
+    uint32_t n_bytes = ntohl(n_bytes_network); 
+
+    if ((uint32_t)8 + n_bytes != payload_len) {
+        fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%u\n", payload_len, n_bytes);
+        return -1;
+    }
+
+    uint8_t* write_bytes = (uint8_t*)malloc(n_bytes); 
+    if (write_bytes == NULL) {
+        fprintf(stderr, "malloc fails in write");
+        return -1; 
+    }
+    memcpy(write_bytes, payload + 8, n_bytes); 
+    ssize_t write_result = write(server_fd, write_bytes, n_bytes); 
+    free(write_bytes); 
+
+    int32_t ret_errno = 0; 
+    if (write_result < 0) {
+        ret_errno = (int32_t)errno; 
+    } else {
+        ret_errno = 0;
+    }
+
+    uint32_t write_result_network = htonl((uint32_t)(int32_t)write_result);
+    uint32_t errno_network = htonl((uint32_t)ret_errno);
+
+    // Write response: [result, 4][errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(8);
+    if (response_buf == NULL) {
+        return -1; 
+    }
+    memcpy(response_buf, &write_result_network, 4);
     memcpy(response_buf + 4, &errno_network, 4); 
 
     if (send_all(sessfd, response_buf, 8) < 0) {
@@ -132,9 +178,6 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
     memcpy(&fd_network, payload, 4); 
 
     int32_t server_fd = (int32_t)(ntohl(fd_network)); 
-
-    printf("Close received: %d \n", server_fd);
-    fflush(stdout);
 
     int close_return = close((int)server_fd); 
     int32_t close_errno;
@@ -195,6 +238,9 @@ static int handle_one_message(int sessfd) {
     switch (op_number) {
         case OP_OPEN: 
             ret = handle_open_payload(sessfd, payload, payload_len); 
+            break; 
+        case OP_WRITE: 
+            ret = handle_write_payload(sessfd, payload, payload_len); 
             break; 
         case OP_CLOSE:
             ret = handle_close_payload(sessfd, payload, payload_len); 

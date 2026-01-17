@@ -161,7 +161,7 @@ ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
 
 
 // Op codes 
-enum {OP_OPEN = 1, OP_CLOSE = 3};
+enum {OP_OPEN = 1, OP_WRITE = 2, OP_CLOSE = 3};
 
 static int send_all(int fd, const void *buf, size_t n) {
     const uint8_t *p = (const uint8_t *)buf;
@@ -257,6 +257,35 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 
 }
 
+static int rpc_recv_int_and_errno_response(int sockfd) {
+	// Response in form of [int, 4][errno, 4] in network byte order. 
+	// Assumes this is a function like read, write, close where the int 
+	// implies whether the errno is used. 
+	uint32_t int_network, errno_network; 
+	int rc; 
+
+	rc = recv_all(sockfd, &int_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t int_result = (int32_t)(ntohl(int_network));
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (int_result < 0) {
+		errno = received_errno; 
+		return -1; 
+	} else {
+		return (int)int_result; 
+	}
+}
+
+/*
 static int rpc_recv_open_response(int sockfd) {
 	// Response in form of [fd, 4][errno, 4] in network byte order. 
 	uint32_t fd_network, errno_network; 
@@ -282,6 +311,7 @@ static int rpc_recv_open_response(int sockfd) {
 		return (int)received_fd; 
 	}
 }
+*/
 
 // This is our replacement for the open function from libc.
 int open(const char *pathname, int flags, ...) {
@@ -300,9 +330,7 @@ int open(const char *pathname, int flags, ...) {
 		return -1; 
 	}
 	
-	int server_fd = rpc_recv_open_response(sockfd);
-	printf("Client received fd %d\n", server_fd); 
-	printf("Client errno %d \n", errno); 
+	int server_fd = rpc_recv_int_and_errno_response(sockfd);
 
 	if (server_fd < 0) {
 		return -1; 
@@ -311,7 +339,6 @@ int open(const char *pathname, int flags, ...) {
 		if (client_fd < 0) {
 			return -1; 
 		}
-		printf("Client records fd of %d \n", client_fd);
 		return client_fd; 
 	}
 
@@ -358,6 +385,7 @@ static int rpc_send_close(int sockfd, int fd) {
 	return 0;
 }
 
+/*
 static int rpc_recv_close_response(int sockfd) {
 	// Response in form of [close_ret, 4][errno, 4] in network byte order. 
 	uint32_t close_ret_network, errno_network; 
@@ -383,6 +411,7 @@ static int rpc_recv_close_response(int sockfd) {
 		return (int)received_close_ret; 
 	}
 }
+*/
 
 int close(int fd) {
 	if (is_remote_fd(fd) == false) {
@@ -393,13 +422,110 @@ int close(int fd) {
 		return -1; 
 	}
 
-	int close_return = rpc_recv_close_response(sockfd); 
+	int close_return = rpc_recv_int_and_errno_response(sockfd); 
 	if (close_return < 0) {
 		return -1; 
 	} else {
 		free_remote_fd(fd); 
 		return close_return; 
 	}
+	
+}
+
+static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size_t n_bytes) {
+	//[server_fd, 4][n_bytes, 4][write_buf, n_bytes]
+
+	if (n_bytes > UINT32_MAX) {
+		fprintf(stderr, "Too many bytes in write call \n"); 
+		return -1; 
+	}
+
+	// Payload = fd + payload
+	uint32_t payload_len = (uint32_t)(4 + 4 + n_bytes); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_WRITE); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
+	memcpy(buf + buf_offset, &server_fd_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t n_bytes_network = htonl((uint32_t)(n_bytes)); 
+	memcpy(buf + buf_offset, &n_bytes_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, write_buf, n_bytes); 
+	buf_offset += n_bytes; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0;
+
+}
+
+static ssize_t rpc_recv_write_response(int sockfd) {
+	// Response in form of [int, 4][errno, 4] in network byte order. 
+	// Assumes this is a function like read, write, close where the int 
+	// implies whether the errno is used. 
+	uint32_t int_network, errno_network; 
+	int rc; 
+
+	rc = recv_all(sockfd, &int_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t int_result = (int32_t)(ntohl(int_network));
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (int_result < 0) {
+		errno = received_errno; 
+		return -1; 
+	} else {
+		return (ssize_t)int_result; 
+	}
+}
+
+
+
+ssize_t write(int fd, const void* buf, size_t n_bytes) {
+	if (is_remote_fd(fd) == false) {
+		return orig_write(fd, buf, n_bytes); 
+	}
+
+	int server_fd = client_fd_to_server_fd(fd); 
+
+	if (rpc_send_write(sockfd, server_fd, buf, n_bytes) < 0) {
+		return -1; 
+	}
+
+	ssize_t write_return = (ssize_t)rpc_recv_write_response(sockfd); 
+	return write_return; 
 	
 }
 
@@ -410,12 +536,7 @@ ssize_t read(int fd, void *buf, size_t count) {
 	return orig_read(fd, buf, count);
 }
 
-ssize_t write(int filedes, const void* buf, size_t nbyte) {
-	// const char* msg = "write\n";
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_write(filedes, buf, nbyte);
-}
 
 off_t lseek(int fd, off_t offset, int whence) {
 	// const char* msg = "lseek\n";
@@ -461,18 +582,17 @@ void freedirtree(struct dirtreenode *dt) {
 
 
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
-    const char *msg = "getdirentries\n";
+    //const char *msg = "getdirentries\n";
 
-    int saved_errno = errno;
-    send(sockfd, msg, strlen(msg), 0);
-    errno = saved_errno;
+    //int saved_errno = errno;
+    //send(sockfd, msg, strlen(msg), 0);
+    //errno = saved_errno;
 
     return orig_getdirentries(fd, buf, nbytes, basep);
 }
 
 // This function is automatically called when program is started
 void _init(void) {
-	printf("Libary version: 10:02\n");
 
 
 	// set function pointer orig_open to point to the original open function
