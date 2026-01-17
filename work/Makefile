@@ -1,7 +1,5 @@
-CC := gcc
 CFLAGS := -Wall -Wextra -O2 -g -fPIC
-SO_LDFLAGS := -shared
-LDLIBS := -ldl
+LDLIBS := -ldl -ldirtree
 
 .PHONY: all clean
 
@@ -14,10 +12,10 @@ mylib.so: mylib.o
 	gcc -shared -nostartfiles -o mylib.so mylib.o -ldl
 
 server.o: server.c
-	$(CC) -Wall -Wextra -O2 -g -c -o $@ $<
+	gcc -Wall -Wextra -O2 -g -c -o $@ $<
 
 server: server.o
-	$(CC) -o $@ $^
+	gcc -o $@ $^
 
 clean:
 	rm -f *.o mylib.so server
