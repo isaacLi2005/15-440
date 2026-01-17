@@ -19,7 +19,7 @@
 
 #define MAXMSGLEN 100 
 
-enum {OP_OPEN = 1};
+enum {OP_OPEN = 1, OP_CLOSE = 3};
 
 static int recv_all(int fd, void* buf, size_t n) {
     uint8_t* p = (uint8_t*)buf; 
@@ -120,6 +120,47 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
     }
 }
 
+static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    // Takes the payload of an close call, calls close, and sends a respose back. 
+    //[fd, 4]
+    if (payload_len != 4) {
+        fprintf(stderr, "Wrong close payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t fd_network; 
+    memcpy(&fd_network, payload, 4); 
+
+    int32_t server_fd = (int32_t)(ntohl(fd_network)); 
+
+    printf("Close received: %d \n", server_fd);
+    fflush(stdout);
+
+    int close_return = close((int)server_fd); 
+    int32_t close_errno;
+    if (close_return < 0) {
+        close_errno = (int32_t)errno; 
+    } else {
+        close_errno = 0; 
+    }
+
+    uint32_t close_return_network = htonl((uint32_t)close_return);
+    uint32_t errno_network = htonl((uint32_t)close_errno);
+
+    // Open response: [fd, 4][errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(8);
+    memcpy(response_buf, &close_return_network, 4);
+    memcpy(response_buf + 4, &errno_network, 4); 
+
+    if (send_all(sessfd, response_buf, 8) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
+}
+
 
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
@@ -155,6 +196,9 @@ static int handle_one_message(int sessfd) {
         case OP_OPEN: 
             ret = handle_open_payload(sessfd, payload, payload_len); 
             break; 
+        case OP_CLOSE:
+            ret = handle_close_payload(sessfd, payload, payload_len); 
+            break;
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 
             ret = -1; 

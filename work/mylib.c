@@ -1,3 +1,6 @@
+// Code for converting a server_fd to a client_fd was taken from Gemini. 
+
+
 #define _GNU_SOURCE
 
 #include <dlfcn.h>
@@ -29,9 +32,9 @@
 
 #include "../include/dirtree.h"
 
-#define MAXMSGLEN 100
 
 #define REMOTE_FD_OFFSET 100000
+
 
 struct remote_fd_entry {
 	bool in_use; 
@@ -158,7 +161,7 @@ ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
 
 
 // Op codes 
-enum {OP_OPEN = 1};
+enum {OP_OPEN = 1, OP_CLOSE = 3};
 
 static int send_all(int fd, const void *buf, size_t n) {
     const uint8_t *p = (const uint8_t *)buf;
@@ -189,19 +192,30 @@ static int recv_all(int fd, void* buf, size_t n) {
     return 1; 
 }
 
+static uint8_t* create_rpc_buf(uint32_t total_size) {
+	
+	uint8_t* buf = (uint8_t*)malloc(total_size); 
+	if (buf == NULL) {
+		fprintf(stderr, "Malloc fails in create_rpc_buf \n");
+		return NULL; 
+	}
+
+	return buf; 	
+}
+
+static void free_rpc_buf(uint8_t* rpc_buf) {
+	free(rpc_buf);
+}
+
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
 	// Include end '\0'
 	uint32_t path_len = (uint32_t)strlen(pathname) + 1; 
 
 	// Payload = flags + mode + path_len + pathname 
 	uint32_t payload_len = (uint32_t)(4 + 4 + 4 + path_len); 
+	uint32_t total_len = 8 + payload_len; 
 
-	size_t total_len = (size_t)8 + payload_len; 
-	uint8_t* buf = (uint8_t*)malloc(total_len); //uint8_t* means array of bytes. 
-	if (buf == NULL) {
-		fprintf(stderr, "Malloc error in rpc_send_open, mylib.c. \n");
-		return -1; 
-	}
+	uint8_t* buf = create_rpc_buf(total_len); 
 
 	size_t buf_offset = 0;
 
@@ -233,7 +247,7 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
 
-	free(buf); 
+	free_rpc_buf(buf); 
 
 	if (rc < 0) {
 		return -1;
@@ -303,11 +317,90 @@ int open(const char *pathname, int flags, ...) {
 
 }
 
-int close(int fd) {
-	// const char* msg = "close\n";
+static int rpc_send_close(int sockfd, int fd) {
+	if (is_remote_fd(fd) == false) {
+		return -1; 
+	}
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_close(fd);
+	int server_fd = client_fd_to_server_fd(fd); 
+
+	uint32_t payload_len = (uint32_t)(4);
+	uint32_t total_len = (uint32_t)(8) + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0; 
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_CLOSE);
+	memcpy(buf + buf_offset, &op_number_network, 4);
+	buf_offset += 4;
+
+	uint32_t payload_length_network = htonl(payload_len);
+	memcpy(buf + buf_offset, &payload_length_network, 4); 
+	buf_offset += 4;
+
+	// Payload start 
+	uint32_t fd_network = htonl((uint32_t)(int32_t)server_fd); 
+	memcpy(buf + buf_offset, &fd_network, 4); 
+	buf_offset += 4; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static int rpc_recv_close_response(int sockfd) {
+	// Response in form of [close_ret, 4][errno, 4] in network byte order. 
+	uint32_t close_ret_network, errno_network; 
+	int rc; 
+
+	rc = recv_all(sockfd, &close_ret_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t received_close_ret = (int32_t)(ntohl(close_ret_network));
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (received_close_ret < 0) {
+		errno = received_errno; 
+		return -1; 
+	} else {
+		return (int)received_close_ret; 
+	}
+}
+
+int close(int fd) {
+	if (is_remote_fd(fd) == false) {
+		return orig_close(fd); 
+	}
+
+	if (rpc_send_close(sockfd, fd) < 0) {
+		return -1; 
+	}
+
+	int close_return = rpc_recv_close_response(sockfd); 
+	if (close_return < 0) {
+		return -1; 
+	} else {
+		free_remote_fd(fd); 
+		return close_return; 
+	}
+	
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
