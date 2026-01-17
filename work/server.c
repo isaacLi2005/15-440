@@ -121,7 +121,7 @@ static int handle_one_message(int sessfd) {
 
 // Recall: argc is number or arguments, argv is the array of char* strings. 
 int main(int argc, char** argv) {
-    fprintf(stderr, "SERVER VERSION 9:30\n");
+    fprintf(stderr, "SERVER VERSION 10:00\n");
     fflush(stderr);
 
     (void)argc;

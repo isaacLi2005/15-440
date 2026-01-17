@@ -215,6 +215,9 @@ ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
 
 // This function is automatically called when program is started
 void _init(void) {
+	printf("Libary version: 10:02\n");
+
+
 	// set function pointer orig_open to point to the original open function
 	orig_open = dlsym(RTLD_NEXT, "open");
 	orig_close = dlsym(RTLD_NEXT, "close");
