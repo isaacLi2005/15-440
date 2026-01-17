@@ -12,6 +12,11 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <fcntl.h> 
+#include <sys/types.h>
+#include <sys/stat.h> 
+
+
 #define MAXMSGLEN 100 
 
 enum {OP_OPEN = 1};
@@ -32,7 +37,21 @@ static int recv_all(int fd, void* buf, size_t n) {
     return 1; 
 }
 
-static int handle_open_payload(const uint8_t* payload, uint32_t payload_len) {
+static int send_all(int fd, const void *buf, size_t n) {
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t sent = 0;
+    while (sent < n) {
+        ssize_t rv = send(fd, p + sent, n - sent, 0);
+        if (rv <= 0) {
+            return -1;
+        }
+        sent += (size_t)rv;
+    }
+    return 0;
+}
+
+static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    // Takes the payload of an open call, calls open, and sends a respose back. 
     //[flags, 4][mode, 4][path_len, 4][pathname, path_len]
     if (payload_len < 12) {
         fprintf(stderr, "Open payload too short in server.c: %u\n", payload_len);
@@ -66,7 +85,39 @@ static int handle_open_payload(const uint8_t* payload, uint32_t payload_len) {
     printf("path = \"%s\"\n", pathname);
     fflush(stdout);
 
-    return 0;
+    int fd; 
+    if (flags & O_CREAT) {
+        fd = open(pathname, flags, (mode_t)mode);
+    } else {
+        fd = open(pathname, flags);
+    }
+
+    int32_t ret_fd = (int32_t)fd; 
+    int32_t ret_errno = 0; 
+    if (fd < 0) {
+        ret_errno = (int32_t)errno; 
+    } else {
+        ret_errno = 0;
+    }
+
+    printf("Server open fd: %d \n", ret_fd);
+    printf("Server open errno: %d \n", ret_errno); 
+
+    uint32_t fd_network = htonl((uint32_t)ret_fd);
+    uint32_t errno_network = htonl((uint32_t)ret_errno);
+
+    // Open response: [fd, 4][errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(8);
+    memcpy(response_buf, &fd_network, 4);
+    memcpy(response_buf + 4, &errno_network, 4); 
+
+    if (send_all(sessfd, response_buf, 8) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
 }
 
 
@@ -102,7 +153,7 @@ static int handle_one_message(int sessfd) {
     int ret = 0; 
     switch (op_number) {
         case OP_OPEN: 
-            ret = handle_open_payload(payload, payload_len); 
+            ret = handle_open_payload(sessfd, payload, payload_len); 
             break; 
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 

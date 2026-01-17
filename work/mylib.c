@@ -31,6 +31,52 @@
 
 #define MAXMSGLEN 100
 
+#define REMOTE_FD_OFFSET 100000
+
+struct remote_fd_entry {
+	bool in_use; 
+	int server_fd; 
+	int local_fd; 
+}; 
+static struct remote_fd_entry* remote_entries = NULL; 
+static size_t remote_entry_capacity = 0; 
+
+static int ensure_remote_size(size_t num_needed) {
+	if (remote_entry_capacity >= num_needed) {
+		return 0; 
+	}
+
+	size_t cap; 
+	if (remote_entry_capacity == 0) {
+		cap = 1; 
+	} else {
+		cap = remote_entry_capacity; 
+	}
+
+	while (cap < num_needed) {
+		cap *= 2; 
+	}
+
+	struct remote_fd_entry* new_remote_entries =
+		(struct remote_fd_entry*)malloc(cap * sizeof(struct remote_fd_entry)); 
+	if (new_remote_entries == NULL) {
+		return -1; 
+	}
+	if (remote_entries != NULL && remote_entry_capacity > 0) {
+		memcpy(new_remote_entries, remote_entries, remote_entry_capacity * sizeof(struct remote_fd_entry)); 
+	}
+	for (size_t i = remote_entry_capacity; i < cap; i++) {
+		new_remote_entries[i].in_use = false; 
+		new_remote_entries[i].server_fd = -1; 
+		new_remote_entries[i].local_fd = -1; 
+	}
+
+	free(remote_entries); 
+	remote_entries = new_remote_entries; 
+	remote_entry_capacity = cap; 
+	return 0; 
+
+}
 
 
 // TCP client
@@ -67,6 +113,22 @@ static int send_all(int fd, const void *buf, size_t n) {
     return 0;
 }
 
+static int recv_all(int fd, void* buf, size_t n) {
+    uint8_t* p = (uint8_t*)buf; 
+    size_t got = 0; 
+
+    while (got < n) {
+        ssize_t rv = recv(fd, p + got, n - got, 0); 
+        if (rv < 0) {
+            return -1;
+        } else if (rv == 0) {
+            return 0; 
+        }
+        got += (size_t)rv; 
+    }
+    return 1; 
+}
+
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
 	// Include end '\0'
 	uint32_t path_len = (uint32_t)strlen(pathname) + 1; 
@@ -75,7 +137,7 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 	uint32_t payload_len = (uint32_t)(4 + 4 + 4 + path_len); 
 
 	size_t total_len = (size_t)8 + payload_len; 
-	uint8_t* buf = (uint8_t*)malloc(total_len);
+	uint8_t* buf = (uint8_t*)malloc(total_len); //uint8_t* means array of bytes. 
 	if (buf == NULL) {
 		fprintf(stderr, "Malloc error in rpc_send_open, mylib.c. \n");
 		return -1; 
@@ -121,6 +183,32 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 
 }
 
+static int rpc_recv_open_response(int sockfd) {
+	// Response in form of [fd, 4][errno, 4] in network byte order. 
+	uint32_t fd_network, errno_network; 
+	int rc; 
+
+	rc = recv_all(sockfd, &fd_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t received_fd = (int32_t)(ntohl(fd_network));
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (received_fd < 0) {
+		errno = received_errno; 
+		return -1; 
+	} else {
+		return (int)received_fd; 
+	}
+}
+
 // This is our replacement for the open function from libc.
 int open(const char *pathname, int flags, ...) {
 	mode_t m=0;
@@ -133,9 +221,16 @@ int open(const char *pathname, int flags, ...) {
 
 	
 	int rv = rpc_send_open(sockfd, pathname, flags, m);
+	if (rv < 0) {
+		errno = EIO; 
+		return -1; 
+	}
+	
+	int fd = rpc_recv_open_response(sockfd);
+	printf("Client received fd %d\n", fd); 
+	printf("Client errno %d \n", errno); 
 
-
-	return orig_open(pathname, flags, m);
+	return fd; 
 
 }
 
