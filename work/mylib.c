@@ -42,11 +42,13 @@ int (*orig_close)(int fd);
 ssize_t (*orig_write)(int filedes, const void* buf, size_t nbyte);
 off_t (*orig_lseek)(int fd, off_t offset, int whence);
 int (*orig_stat)(const char *restrict path, struct stat *restrict statbuf);
+int (*orig___xstat)(int ver, const char *path, struct stat *statbuf);
 int (*orig_unlink)(const char *pathname);
 ssize_t (*orig_read)(int fd, void *buf, size_t count);
 struct dirtreenode* (*orig_getdirtree)(const char *path);
 void (*orig_freedirtree)(struct dirtreenode *dt);
-int (*orig___xstat)(int ver, const char *path, struct stat *statbuf);
+ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
+
 
 
 
@@ -101,6 +103,13 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 	return orig_stat(path, statbuf);
 }
 
+int __xstat(int ver, const char *path, struct stat *statbuf) {
+    const char *msg = "__xstat\n";
+
+    send(sockfd, msg, strlen(msg), 0);
+    return orig___xstat(ver, path, statbuf);
+}
+
 int unlink(const char *pathname) {
 	const char* msg = "unlink\n";
 
@@ -122,13 +131,16 @@ void freedirtree(struct dirtreenode *dt) {
     orig_freedirtree(dt);
 }
 
-int __xstat(int ver, const char *path, struct stat *statbuf) {
-    const char *msg = "stat\n";
 
+ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
+    const char *msg = "getdirentries\n";
+
+    int saved_errno = errno;
     send(sockfd, msg, strlen(msg), 0);
-    return orig___xstat(ver, path, statbuf);
-}
+    errno = saved_errno;
 
+    return orig_getdirentries(fd, buf, nbytes, basep);
+}
 
 // This function is automatically called when program is started
 void _init(void) {
@@ -143,6 +155,8 @@ void _init(void) {
 	orig_getdirtree  = dlsym(RTLD_NEXT, "getdirtree");
 	orig_freedirtree = dlsym(RTLD_NEXT, "freedirtree");
 	orig___xstat  = dlsym(RTLD_NEXT, "__xstat");
+	orig_getdirentries = dlsym(RTLD_NEXT, "getdirentries");
+
 
 
 
@@ -167,4 +181,4 @@ void _fini(void) {
 }
 
 
-//TODO: read and the two directory trees. 
+//TODO: Dealing with errno and failure checks. 
