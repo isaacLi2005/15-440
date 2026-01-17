@@ -36,7 +36,6 @@
 struct remote_fd_entry {
 	bool in_use; 
 	int server_fd; 
-	int local_fd; 
 }; 
 static struct remote_fd_entry* remote_entries = NULL; 
 static size_t remote_entry_capacity = 0; 
@@ -68,7 +67,6 @@ static int ensure_remote_size(size_t num_needed) {
 	for (size_t i = remote_entry_capacity; i < cap; i++) {
 		new_remote_entries[i].in_use = false; 
 		new_remote_entries[i].server_fd = -1; 
-		new_remote_entries[i].local_fd = -1; 
 	}
 
 	free(remote_entries); 
@@ -78,6 +76,68 @@ static int ensure_remote_size(size_t num_needed) {
 
 }
 
+static int record_remote_fd(int server_fd) {
+	if (remote_entry_capacity == 0) {
+		if (ensure_remote_size(1) < 0) {
+			return -1; 
+		}
+	}
+
+	// Find a free slot and record 
+	for (size_t i = 0; i < remote_entry_capacity; i++) {
+		if (remote_entries[i].in_use == false) {
+			remote_entries[i].in_use = true; 
+			remote_entries[i].server_fd = server_fd; 
+			return (int)(REMOTE_FD_OFFSET + (int)i);
+		}
+	}
+
+	// Resize if nothing was found. 
+	size_t old_size = remote_entry_capacity;
+	if (ensure_remote_size(old_size + 1) < 0) {
+		return -1; 
+	}
+
+	for (size_t i = old_size; i < remote_entry_capacity; i++) {
+		if (remote_entries[i].in_use == false) {
+			remote_entries[i].in_use = true; 
+			remote_entries[i].server_fd = server_fd; 
+			return (int)(REMOTE_FD_OFFSET + (int)i);
+		}
+	}
+
+	return -1; 	
+
+}
+
+static bool is_remote_fd(int fd) {
+	if (fd < REMOTE_FD_OFFSET) {
+		return false; 
+	} 
+	size_t index = (size_t)(fd) - (size_t)(REMOTE_FD_OFFSET);
+	if (index >= remote_entry_capacity) {
+		return false; 
+	} else {
+		return remote_entries[index].in_use;
+	}
+}
+
+static void free_remote_fd(int client_fd) {
+	if (is_remote_fd(client_fd) == false) {
+		return; 
+	}
+	size_t index = (size_t)(client_fd) - (size_t)(REMOTE_FD_OFFSET); 
+	remote_entries[index].in_use = false; 
+	remote_entries[index].server_fd = -1; 
+}
+
+static int client_fd_to_server_fd(int client_fd) {
+	if (is_remote_fd(client_fd) == false) {
+		return -1; 
+	}
+	size_t index = (size_t)(client_fd - REMOTE_FD_OFFSET); 
+	return remote_entries[index].server_fd; 
+}
 
 // TCP client
 int sockfd; 
@@ -226,11 +286,20 @@ int open(const char *pathname, int flags, ...) {
 		return -1; 
 	}
 	
-	int fd = rpc_recv_open_response(sockfd);
-	printf("Client received fd %d\n", fd); 
+	int server_fd = rpc_recv_open_response(sockfd);
+	printf("Client received fd %d\n", server_fd); 
 	printf("Client errno %d \n", errno); 
 
-	return fd; 
+	if (server_fd < 0) {
+		return -1; 
+	} else {
+		int client_fd = record_remote_fd(server_fd);
+		if (client_fd < 0) {
+			return -1; 
+		}
+		printf("Client records fd of %d \n", client_fd);
+		return client_fd; 
+	}
 
 }
 
