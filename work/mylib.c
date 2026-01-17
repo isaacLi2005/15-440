@@ -24,6 +24,7 @@
 
 #include <stdlib.h>
 #include <arpa/inet.h>
+#include <stdint.h>
 
 
 #include "../include/dirtree.h"
@@ -50,7 +51,75 @@ void (*orig_freedirtree)(struct dirtreenode *dt);
 ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
 
 
+// Op codes 
+enum {OP_OPEN = 1};
 
+static int send_all(int fd, const void *buf, size_t n) {
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t sent = 0;
+    while (sent < n) {
+        ssize_t rv = send(fd, p + sent, n - sent, 0);
+        if (rv <= 0) {
+            return -1;
+        }
+        sent += (size_t)rv;
+    }
+    return 0;
+}
+
+static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
+	// Include end '\0'
+	uint32_t path_len = (uint32_t)strlen(pathname) + 1; 
+
+	// Payload = flags + mode + path_len + pathname 
+	uint32_t payload_len = (uint32_t)(4 + 4 + 4 + path_len); 
+
+	size_t total_len = (size_t)8 + payload_len; 
+	uint8_t* buf = (uint8_t*)malloc(total_len);
+	if (buf == NULL) {
+		fprintf(stderr, "Malloc error in rpc_send_open, mylib.c. \n");
+		return -1; 
+	}
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_OPEN);
+	memcpy(buf + buf_offset, &op_number_network, 4);
+	buf_offset += 4;
+
+	uint32_t payload_length_network = htonl(payload_len);
+	memcpy(buf + buf_offset, &payload_length_network, 4); 
+	buf_offset += 4;
+
+	// Payload start
+	uint32_t flags_network = htonl((uint32_t)flags); 
+	memcpy(buf + buf_offset, &flags_network, 4);
+	buf_offset += 4;
+
+	uint32_t mode_network = htonl((uint32_t)mode); 
+	memcpy(buf + buf_offset, &mode_network, 4);
+	buf_offset += 4;
+
+	uint32_t path_len_network = htonl(path_len);
+	memcpy(buf + buf_offset, &path_len_network, 4);
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, pathname, path_len); 
+	buf_offset += path_len; 
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0;
+
+}
 
 // This is our replacement for the open function from libc.
 int open(const char *pathname, int flags, ...) {
@@ -62,72 +131,74 @@ int open(const char *pathname, int flags, ...) {
 		va_end(a);
 	}
 
-	const char* msg = "open\n";
+	
+	int rv = rpc_send_open(sockfd, pathname, flags, m);
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+
 	return orig_open(pathname, flags, m);
+
 }
 
 int close(int fd) {
-	const char* msg = "close\n";
+	// const char* msg = "close\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_close(fd);
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-	const char* msg = "read\n";
+	// const char* msg = "read\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_read(fd, buf, count);
 }
 
 ssize_t write(int filedes, const void* buf, size_t nbyte) {
-	const char* msg = "write\n";
+	// const char* msg = "write\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_write(filedes, buf, nbyte);
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
-	const char* msg = "lseek\n";
+	// const char* msg = "lseek\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_lseek(fd, offset, whence);
 }
 
 int stat(const char *restrict path, struct stat *restrict statbuf) {
-	const char* msg = "stat\n";
+	// const char* msg = "stat\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_stat(path, statbuf);
 }
 
 int __xstat(int ver, const char *path, struct stat *statbuf) {
-    const char *msg = "__xstat\n";
+    // const char *msg = "__xstat\n";
 
-    send(sockfd, msg, strlen(msg), 0);
+    // send(sockfd, msg, strlen(msg), 0);
     return orig___xstat(ver, path, statbuf);
 }
 
 int unlink(const char *pathname) {
-	const char* msg = "unlink\n";
+	// const char* msg = "unlink\n";
 
-	rv = send(sockfd, msg, strlen(msg), 0);
+	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_unlink(pathname);
 }
 
 struct dirtreenode* getdirtree(const char *path) {
-    const char *msg = "getdirtree\n";
+    // const char *msg = "getdirtree\n";
 
-    send(sockfd, msg, strlen(msg), 0);
+    // send(sockfd, msg, strlen(msg), 0);
     return orig_getdirtree(path);
 }
 
 void freedirtree(struct dirtreenode *dt) {
-    const char *msg = "freedirtree\n";
+    // const char *msg = "freedirtree\n";
 	
-    send(sockfd, msg, strlen(msg), 0);
+    // send(sockfd, msg, strlen(msg), 0);
     orig_freedirtree(dt);
 }
 
