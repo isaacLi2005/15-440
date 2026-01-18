@@ -166,7 +166,8 @@ enum {
 	OP_READ = 5, 
 	OP_STAT = 6, 
 	OP_UNLINK = 7,
-	OP_GETDIRENTRIES = 8
+	OP_GETDIRENTRIES = 8, 
+	OP_GETDIRTREE = 9
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
@@ -886,6 +887,7 @@ ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
 	return getdirentries_result; 
 }
 
+
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
     if (is_remote_fd(fd) == false) {
 		return orig_getdirentries(fd, buf, nbytes, basep);
@@ -901,6 +903,50 @@ ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
 	return getdirentries_result; 
     
 }
+
+static int rpc_send_getdirtree(int sockfd, const char* path) {
+	//[path_length, 4][path, path_length]
+
+	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+
+	// Payload = int + off_t + int
+	uint32_t payload_len = (uint32_t)(4 + path_length); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_GETDIRTREE); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t path_length_network = htonl(path_length); 
+	memcpy(buf + buf_offset, &path_length_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, path, path_length); 
+	buf_offset += path_length; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0; 
+}
+
 
 struct dirtreenode* getdirtree(const char *path) {
     // const char *msg = "getdirtree\n";

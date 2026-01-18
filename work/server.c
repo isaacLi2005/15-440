@@ -31,7 +31,8 @@ enum {
 	OP_READ = 5, 
 	OP_STAT = 6, 
 	OP_UNLINK = 7,
-	OP_GETDIRENTRIES = 8
+	OP_GETDIRENTRIES = 8, 
+	OP_GETDIRTREE = 9; 
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -537,6 +538,44 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
     }
 }
 
+uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot) {
+    // Takes a tree structure and compresses it. 
+
+    
+
+    return NULL; 
+}
+
+static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    //[path_length, 4][path, path_length]
+
+    if (payload_len < 4) {
+        fprintf(stderr, "Wrong getdirtree payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t path_length_network; 
+    memcpy(&path_length_network, payload, 4); 
+    int path_length = (int)(ntohl(path_length_network)); 
+
+    char* path = (char*)malloc(path_length); 
+    if (path == NULL) {
+        return -1; 
+    }
+    memcpy(path, payload + 4, path_length); 
+
+    struct dirtreenode* getdirtree_result = getdirtree(path);  
+
+    free(path); 
+
+
+    // No reason to keep it around on the server; it's the client's problem now. 
+    freedirtree(getdirtree_result); 
+
+
+
+}
+
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
     // Return 1 on success, 0 on client closing connection, -1 on error. 
@@ -589,6 +628,9 @@ static int handle_one_message(int sessfd) {
         case OP_UNLINK: 
             ret = handle_unlink_payload(sessfd, payload, payload_len); 
             break;
+        case OP_GETDIRTREE: 
+            ret = handle_getdirtree_payload(sessfd, payload, payload_len); 
+            break; 
         case OP_GETDIRENTRIES: 
             ret = handle_getdirentries_payload(sessfd, payload, payload_len); 
             break;
