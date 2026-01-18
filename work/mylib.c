@@ -166,7 +166,8 @@ enum {
 	OP_WRITE = 2, 
 	OP_CLOSE = 3, 
 	OP_LSEEK = 4, 
-	OP_READ = 5
+	OP_READ = 5, 
+	OP_STAT = 6
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
@@ -665,11 +666,86 @@ off_t lseek(int fd, off_t offset, int whence) {
 	return lseek_return; 
 }
 
-int stat(const char *restrict path, struct stat *restrict statbuf) {
-	// const char* msg = "stat\n";
+static int rpc_send_stat(int sockfd, const char *restrict path) {
+	//[path_length, 4][path, path_length]
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_stat(path, statbuf);
+	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+
+	// Payload = int + off_t + int
+	uint32_t payload_len = (uint32_t)(4 + path_length); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_STAT); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t path_length_network = htonl(path_length); 
+	memcpy(buf + buf_offset, &path_length_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, path, path_length); 
+	buf_offset += path_length; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0; 
+}
+
+static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
+	// [stat_result, 4][errno, 4][struct stat, sizeof(struct stat)] 
+
+	uint32_t stat_return_network; 
+	uint32_t errno_network; 
+
+	if (recv_all(sockfd, &stat_return_network, 4) < 0) {
+		return -1; 
+	}
+
+	if (recv_all(sockfd, &errno_network, 4) < 0) {
+		return -1; 
+	}
+
+	int32_t stat_return = (int32_t)(ntohl(stat_return_network)); 
+	int32_t stat_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (stat_return <= 0) {
+		errno = stat_errno; 
+		return -1; 
+	}
+
+	int rc = recv_all(sockfd, statbuf, sizeof(struct stat)); 
+	if (rc <= 0) {
+		return -1; 
+	} else {
+		return stat_return; 
+	}
+}
+
+int stat(const char *restrict path, struct stat *restrict statbuf) {
+	if (rpc_send_stat(sockfd, path) < 0) {
+		return -1; 
+	}
+
+	int stat_return = rpc_recv_stat_response(sockfd, statbuf); 
+	return stat_return; 
 }
 
 int unlink(const char *pathname) {

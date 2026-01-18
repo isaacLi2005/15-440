@@ -26,7 +26,8 @@ enum {
 	OP_WRITE = 2, 
 	OP_CLOSE = 3, 
 	OP_LSEEK = 4, 
-	OP_READ = 5
+	OP_READ = 5, 
+    OP_STAT = 6
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -330,6 +331,55 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
     }
 }
 
+static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    //[path_length, 4][path, path_length]
+
+    if (payload_len < 4) {
+        fprintf(stderr, "Wrong stat payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t path_length_network; 
+    memcpy(&path_length_network, payload, 4); 
+    int path_length = (int)(ntohl(path_length_network)); 
+
+    char* path = (char*)malloc(path_length); 
+    memcpy(path, payload + 4, path_length); 
+
+    struct stat st; 
+    int stat_result = stat(path, &st); 
+    free(path);
+
+    int32_t stat_errno; 
+    if (stat_result < 0) {
+        stat_errno = (int32_t)errno; 
+    } else {
+        stat_errno = 0; 
+    }
+    uint32_t stat_result_network = htonl((uint32_t)stat_result); 
+    uint32_t errno_network = htonl((uint32_t)stat_errno); 
+    
+
+    // [stat_result, 4][errno, 4][struct stat, sizeof(struct stat)] 
+    uint8_t* response_buf = (uint8_t*)malloc(4 + 4 + sizeof(struct stat)); 
+    if (response_buf == NULL) {
+        free(response_buf); 
+        return -1; 
+    }
+
+    memcpy(response_buf, &stat_result_network, 4); 
+    memcpy(response_buf + 4, &errno_network, 4); 
+    memcpy(response_buf + 8, &st, sizeof(struct stat)); 
+
+    if (send_all(sessfd, response_buf, 4 + 4 + sizeof(struct stat)) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
+}
+
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
     // Return 1 on success, 0 on client closing connection, -1 on error. 
@@ -375,6 +425,9 @@ static int handle_one_message(int sessfd) {
             break; 
         case OP_READ: 
             ret = handle_read_payload(sessfd, payload, payload_len); 
+            break; 
+        case OP_STAT: 
+            ret = handle_stat_payload(sessfd, payload, payload_len); 
             break; 
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 
