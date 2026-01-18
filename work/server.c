@@ -25,7 +25,8 @@ enum {
 	OP_OPEN = 1, 
 	OP_WRITE = 2, 
 	OP_CLOSE = 3, 
-	OP_LSEEK = 4 
+	OP_LSEEK = 4, 
+	OP_READ = 5
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -215,7 +216,7 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
 }
 
 static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
-        if (payload_len != 16) {
+    if (payload_len != 16) {
         fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
         return -1;
     }
@@ -265,6 +266,69 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     }
 }
 
+// TODO: What if a client asks for a 0 read? 
+static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    // [server_fd, 4][count, 8]
+    if (payload_len != 12) {
+        fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t fd_network; 
+    memcpy(&fd_network, payload, 4); 
+    int server_fd = (int)(ntohl(fd_network)); 
+
+    uint64_t count_received; 
+    memcpy(&count_received, payload + 4, 8); 
+    size_t count = (size_t)(count_received); 
+
+    void* read_buf = malloc(count); 
+    if (read_buf == NULL) {
+        return -1; 
+    }
+
+    ssize_t read_result = read(server_fd, read_buf, count); 
+
+    int32_t read_errno; 
+    if (read_result < 0) {
+        read_errno = (int32_t)errno; 
+    } else {
+        read_errno = 0; 
+    }
+    uint32_t errno_network = htonl((uint32_t)read_errno);
+    int64_t result_beamed = (int64_t)read_result; 
+
+    size_t data_length; 
+    if (read_result > 0) {
+        data_length = (size_t)read_result;
+    } else {
+        data_length = 0; 
+    }
+
+    // read response: [read_result, 8][errno_network, 4][read_buf, count]
+    uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + data_length);
+    if (response_buf == NULL) {
+        free(response_buf);
+        return -1; 
+    }
+
+    memcpy(response_buf, &result_beamed, 8);
+    memcpy(response_buf + 8, &errno_network, 4); 
+    if (data_length > 0) {
+        memcpy(response_buf + 12, read_buf, data_length); 
+    }
+    
+
+    if (send_all(sessfd, response_buf, 8 + 4 + data_length) < 0) {
+        free(response_buf);
+        free(read_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        free(read_buf); 
+        return 0;
+    }
+}
 
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
@@ -308,6 +372,9 @@ static int handle_one_message(int sessfd) {
             break;
         case OP_LSEEK: 
             ret = handle_lseek_payload(sessfd, payload, payload_len); 
+            break; 
+        case OP_READ: 
+            ret = handle_read_payload(sessfd, payload, payload_len); 
             break; 
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 

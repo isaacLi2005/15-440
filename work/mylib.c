@@ -165,7 +165,8 @@ enum {
 	OP_OPEN = 1, 
 	OP_WRITE = 2, 
 	OP_CLOSE = 3, 
-	OP_LSEEK = 4 
+	OP_LSEEK = 4, 
+	OP_READ = 5
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
@@ -428,7 +429,6 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	}
 
 	return 0;
-
 }
 
 //TODO: size_t is actually 64 bits. 
@@ -476,12 +476,103 @@ ssize_t write(int fd, const void* buf, size_t n_bytes) {
 	return write_return; 
 }
 
+static int rpc_send_read(int sockfd, int server_fd, size_t count) {
+	// [server_fd, 4][count, 8]
+	// Note we don't send the buf. That will be copied in the recv function. 
+
+	if (count > UINT32_MAX) {
+		fprintf(stderr, "Too many bytes in read call \n"); 
+		return -1; 
+	}
+
+	// Payload = fd + payload
+	uint32_t payload_len = (uint32_t)(4 + 8); 
+	uint32_t total_len = 8 + payload_len; 
+ 
+	uint8_t* buf = create_rpc_buf(total_len); 
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_READ); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
+	memcpy(buf + buf_offset, &server_fd_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, &count, 8); 
+	buf_offset += 8; 
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
+	// [read_result, 8][errno_network, 4][read_buf, count]
+
+	int64_t read_result;
+	uint32_t errno_network; 
+
+	int rc; 
+
+	rc = recv_all(sockfd, &read_result, 8); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+
+	if (read_result < 0) {
+		errno = received_errno; 
+		return -1; 
+	} 
+
+	void* read_bytes = malloc(read_result); 
+	rc = recv_all(sockfd, read_bytes, read_result); 
+	if (rc < 0) {
+		return -1; 
+	}
+
+	memcpy(buf, read_bytes, read_result); 
+	
+
+	free(read_bytes); 
+	return (ssize_t)read_result; 
+	
+}
 
 ssize_t read(int fd, void *buf, size_t count) {
-	// const char* msg = "read\n";
+	if (is_remote_fd(fd) == false) {
+		return orig_read(fd, buf, count); 
+	}
+	int server_fd = client_fd_to_server_fd(fd); 
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_read(fd, buf, count);
+	if (rpc_send_read(sockfd, server_fd, count) < 0) {
+		return -1; 
+	}
+
+	ssize_t read_return = (ssize_t)rpc_recv_read_response(sockfd, buf); 
+	return read_return; 
 }
 
 static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
@@ -581,20 +672,21 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 	return orig_stat(path, statbuf);
 }
 
-/*
-int __xstat(int ver, const char *path, struct stat *statbuf) {
-    // const char *msg = "__xstat\n";
-
-    // send(sockfd, msg, strlen(msg), 0);
-    return orig___xstat(ver, path, statbuf);
-}
-*/
-
 int unlink(const char *pathname) {
 	// const char* msg = "unlink\n";
 
 	// rv = send(sockfd, msg, strlen(msg), 0);
 	return orig_unlink(pathname);
+}
+
+ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
+    //const char *msg = "getdirentries\n";
+
+    //int saved_errno = errno;
+    //send(sockfd, msg, strlen(msg), 0);
+    //errno = saved_errno;
+
+    return orig_getdirentries(fd, buf, nbytes, basep);
 }
 
 struct dirtreenode* getdirtree(const char *path) {
@@ -609,17 +701,6 @@ void freedirtree(struct dirtreenode *dt) {
 	
     // send(sockfd, msg, strlen(msg), 0);
     orig_freedirtree(dt);
-}
-
-
-ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
-    //const char *msg = "getdirentries\n";
-
-    //int saved_errno = errno;
-    //send(sockfd, msg, strlen(msg), 0);
-    //errno = saved_errno;
-
-    return orig_getdirentries(fd, buf, nbytes, basep);
 }
 
 // This function is automatically called when program is started
