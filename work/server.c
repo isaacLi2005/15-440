@@ -272,7 +272,7 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
 static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
     // [server_fd, 4][count, 8]
     if (payload_len != 12) {
-        fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
+        fprintf(stderr, "Wrong read payload size: %u\n", payload_len);
         return -1;
     }
 
@@ -362,6 +362,10 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
     int path_length = (int)(ntohl(path_length_network)); 
 
     char* path = (char*)malloc(path_length); 
+    if (path == NULL) {
+        free(path); 
+        return -1; 
+    }
     memcpy(path, payload + 4, path_length); 
 
     struct stat st; 
@@ -389,7 +393,59 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
     memcpy(response_buf + 4, &errno_network, 4); 
     memcpy(response_buf + 8, &st, sizeof(struct stat)); 
 
+
     if (send_all(sessfd, response_buf, 4 + 4 + sizeof(struct stat)) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
+}
+
+static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    //[path_length, 4][path, path_length]
+
+    if (payload_len < 4) {
+        fprintf(stderr, "Wrong stat payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t path_length_network; 
+    memcpy(&path_length_network, payload, 4); 
+    int path_length = (int)(ntohl(path_length_network)); 
+
+    char* path = (char*)malloc(path_length); 
+    if (path == NULL) {
+        return -1; 
+    }
+    memcpy(path, payload + 4, path_length); 
+
+    int unlink_result = unlink(path); 
+
+    free(path); 
+
+    int32_t unlink_errno; 
+    if (unlink_result < 0) {
+        unlink_errno = errno; 
+    } else {
+        unlink_errno = 0; 
+    }
+
+    uint32_t unlink_result_network = htonl((uint32_t)unlink_result); 
+    uint32_t errno_network = htonl((uint32_t)unlink_errno); 
+    
+    // read response: [unlink_result, 4][unlink_errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(4 + 4);
+    if (response_buf == NULL) {
+        free(response_buf); 
+        return -1; 
+    }
+
+    memcpy(response_buf, &unlink_result_network, 4); 
+    memcpy(response_buf + 4, &errno_network, 4); 
+
+    if (send_all(sessfd, response_buf, 4 + 4) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -447,6 +503,9 @@ static int handle_one_message(int sessfd) {
         case OP_STAT: 
             ret = handle_stat_payload(sessfd, payload, payload_len); 
             break; 
+        case OP_UNLINK: 
+            ret = handle_unlink_payload(sessfd, payload, payload_len); 
+            break;
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 
             ret = -1; 

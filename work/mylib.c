@@ -749,15 +749,56 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 	return stat_return; 
 }
 
-rpc_send_unlink(int sockfd, const char* pathname) {
+static int rpc_send_unlink(int sockfd, const char *restrict path) {
+	//[path_length, 4][path, path_length]
 
+	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+
+	// Payload = int + off_t + int
+	uint32_t payload_len = (uint32_t)(4 + path_length); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_UNLINK); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t path_length_network = htonl(path_length); 
+	memcpy(buf + buf_offset, &path_length_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, path, path_length); 
+	buf_offset += path_length; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0; 
 }
 
 int unlink(const char *pathname) {
-	// const char* msg = "unlink\n";
+	if (rpc_send_unlink(sockfd, pathname) < 0) {
+		return -1; 
+	}
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_unlink(pathname);
+	int unlink_result = rpc_recv_int_and_errno_response(sockfd); 
+	return unlink_result;
 }
 
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
