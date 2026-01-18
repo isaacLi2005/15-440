@@ -18,6 +18,8 @@
 
 #include "../include/dirtree.h"
 
+#include <dirent.h>
+
 
 #define MAXMSGLEN 100 
 
@@ -28,7 +30,8 @@ enum {
 	OP_LSEEK = 4, 
 	OP_READ = 5, 
 	OP_STAT = 6, 
-	OP_UNLINK = 7
+	OP_UNLINK = 7,
+	OP_GETDIRENTRIES = 8
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -109,6 +112,9 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
 
     // Open response: [fd, 4][errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(8);
+    if (response_buf == NULL) {
+        return -1; 
+    }
     memcpy(response_buf, &fd_network, 4);
     memcpy(response_buf + 4, &errno_network, 4); 
 
@@ -136,7 +142,7 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
     int32_t server_fd = (int32_t)ntohl(server_fd_network); 
 
     if ((uint64_t)12 + n_bytes != (uint64_t)payload_len) {
-        fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%llu\n", payload_len, n_bytes);
+        fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%lu\n", payload_len, n_bytes);
         return -1;
     } else if (n_bytes > UINT32_MAX) {
         fprintf(stderr, "Write payload too big \n");
@@ -454,6 +460,83 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
     }
 }
 
+static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    //[server_fd, 4][nbytes, 8][base, 8]
+
+    if (payload_len != 20) {
+        fprintf(stderr, "Wrong getdirentries payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t server_fd_network; 
+    memcpy(&server_fd_network, payload, 4); 
+    int server_fd = (int)(ntohl(server_fd_network)); 
+
+    uint64_t nbytes; 
+    memcpy(&nbytes, payload + 4, 8); 
+
+    uint64_t base; 
+    memcpy(&base, payload + 12, 8); 
+
+    char* getdirentries_buf; 
+    if (nbytes > 0) {
+        getdirentries_buf = (char*)malloc((size_t)nbytes); 
+        if (getdirentries_buf == NULL) {
+            return -1; 
+        }
+    } else {
+        getdirentries_buf = NULL; 
+    }
+
+    off_t* basep = malloc(sizeof(off_t)); 
+    if (basep == NULL) {
+        free(getdirentries_buf);
+        return -1; 
+    }
+    *basep = (off_t)base;
+
+    ssize_t getdirentries_result = getdirentries(server_fd, getdirentries_buf, (size_t)nbytes, basep); 
+
+    int getdirentries_errno; 
+    size_t data_length; 
+    if (getdirentries_result < 0) {
+        getdirentries_errno = errno; 
+        data_length = 0; 
+    } else {
+        getdirentries_errno = 0; 
+        data_length = (size_t)getdirentries_result; 
+    }
+
+    uint32_t getdirentries_errno_network = htonl((uint32_t)getdirentries_errno); 
+
+    // getdirentries response: [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
+    uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + 8 + data_length);
+    if (response_buf == NULL) {
+        free(basep); 
+        free(getdirentries_buf); 
+        return -1; 
+    }
+
+    memcpy(response_buf, &getdirentries_result, 8);
+    memcpy(response_buf + 8, &getdirentries_errno_network, 4); 
+    memcpy(response_buf + 12, basep, 8); 
+    if (data_length > 0) {
+        memcpy(response_buf + 20, getdirentries_buf, data_length); 
+    }
+
+    int rc = send_all(sessfd, response_buf, 8 + 4 + 8 + data_length); 
+
+    free(response_buf);
+    free(basep); 
+    free(getdirentries_buf); 
+
+    if (rc < 0) {
+        return -1; 
+    } else {
+        return 0; 
+    }
+}
+
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
     // Return 1 on success, 0 on client closing connection, -1 on error. 
@@ -505,6 +588,9 @@ static int handle_one_message(int sessfd) {
             break; 
         case OP_UNLINK: 
             ret = handle_unlink_payload(sessfd, payload, payload_len); 
+            break;
+        case OP_GETDIRENTRIES: 
+            ret = handle_getdirentries_payload(sessfd, payload, payload_len); 
             break;
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 

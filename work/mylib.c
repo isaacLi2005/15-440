@@ -13,13 +13,10 @@
 #include <stdarg.h>
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 
-#include <sys/types.h>
 #include <sys/stat.h>
 
 #include <sys/socket.h>
@@ -28,7 +25,8 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include <stdint.h>
-
+#include <assert.h>
+#include <dirent.h>
 
 #include "../include/dirtree.h"
 
@@ -152,7 +150,6 @@ int (*orig_close)(int fd);
 ssize_t (*orig_write)(int filedes, const void* buf, size_t nbyte);
 off_t (*orig_lseek)(int fd, off_t offset, int whence);
 int (*orig_stat)(const char *restrict path, struct stat *restrict statbuf);
-int (*orig___xstat)(int ver, const char *path, struct stat *statbuf);
 int (*orig_unlink)(const char *pathname);
 ssize_t (*orig_read)(int fd, void *buf, size_t count);
 struct dirtreenode* (*orig_getdirtree)(const char *path);
@@ -168,7 +165,8 @@ enum {
 	OP_LSEEK = 4, 
 	OP_READ = 5, 
 	OP_STAT = 6, 
-	OP_UNLINK = 7
+	OP_UNLINK = 7,
+	OP_GETDIRENTRIES = 8
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
@@ -547,11 +545,13 @@ static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
 	if (read_result < 0) {
 		errno = received_errno; 
 		return -1; 
-	} 
+	} else if (read_result == 0) {
+		return (ssize_t)read_result; 
+	}
 
 	void* read_bytes = malloc(read_result); 
 	rc = recv_all(sockfd, read_bytes, read_result); 
-	if (rc < 0) {
+	if (rc <= 0) {
 		return -1; 
 	}
 
@@ -716,11 +716,11 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 	uint32_t stat_return_network; 
 	uint32_t errno_network; 
 
-	if (recv_all(sockfd, &stat_return_network, 4) < 0) {
+	if (recv_all(sockfd, &stat_return_network, 4) <= 0) {
 		return -1; 
 	}
 
-	if (recv_all(sockfd, &errno_network, 4) < 0) {
+	if (recv_all(sockfd, &errno_network, 4) <= 0) {
 		return -1; 
 	}
 
@@ -801,14 +801,105 @@ int unlink(const char *pathname) {
 	return unlink_result;
 }
 
+static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
+	//[server_fd, 4][nbytes, 8][base, 8]
+
+	if (basep == NULL) {
+		fprintf(stderr, "basep was null in rpc_send_getdirentries\n");
+		return -1; 
+	}
+	off_t base = *basep; 
+
+	// Payload = int + size_t + off_t 
+	uint32_t payload_len = (uint32_t)(4 + 8 + 8); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_GETDIRENTRIES); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(int32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t server_fd_network = htonl((uint32_t)server_fd); 
+	memcpy(buf + buf_offset, &server_fd_network, 4); 
+	buf_offset += 4; 
+
+	memcpy(buf + buf_offset, &nbytes, 8); 
+	buf_offset += 8; 
+
+	memcpy(buf + buf_offset, &base, 8); 
+	buf_offset += 8; 
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0; 
+
+}
+
+ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
+    // getdirentries response: [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
+
+	ssize_t getdirentries_result; 
+	uint32_t getdirentries_errno_network; 
+	off_t new_base; 
+
+	if (recv_all(sockfd, &getdirentries_result, 8) <= 0) {
+		return -1; 
+	}
+
+	if (recv_all(sockfd, &getdirentries_errno_network, 4) <= 0) {
+		return -1; 
+	}
+	int32_t getdirentries_errno = (int32_t)(ntohl(getdirentries_errno_network)); 
+
+	if (recv_all(sockfd, &new_base, 8) <= 0) {
+		return -1; 
+	}
+
+
+	if (getdirentries_result < 0) {
+		errno = getdirentries_errno; 
+		return -1; 
+	}
+
+	assert(basep != NULL); 
+	*basep = new_base; 
+
+	if (recv_all(sockfd, buf, getdirentries_result) <= 0) {
+		return -1; 
+	}
+
+	return getdirentries_result; 
+}
+
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
-    //const char *msg = "getdirentries\n";
+    if (is_remote_fd(fd) == false) {
+		return orig_getdirentries(fd, buf, nbytes, basep);
+	}
 
-    //int saved_errno = errno;
-    //send(sockfd, msg, strlen(msg), 0);
-    //errno = saved_errno;
+	int server_fd = client_fd_to_server_fd(fd); 
 
-    return orig_getdirentries(fd, buf, nbytes, basep);
+	if (rpc_send_getdirentries(server_fd, nbytes, basep) < 0) {
+		return -1; 
+	}
+
+	ssize_t getdirentries_result = rpc_recv_getdirentries_response(sockfd, buf, basep); 
+	return getdirentries_result; 
+    
 }
 
 struct dirtreenode* getdirtree(const char *path) {
@@ -839,7 +930,6 @@ void _init(void) {
 	orig_read = dlsym(RTLD_NEXT, "read");
 	orig_getdirtree  = dlsym(RTLD_NEXT, "getdirtree");
 	orig_freedirtree = dlsym(RTLD_NEXT, "freedirtree");
-	orig___xstat  = dlsym(RTLD_NEXT, "__xstat");
 	orig_getdirentries = dlsym(RTLD_NEXT, "getdirentries");
 
 
@@ -864,6 +954,3 @@ void _init(void) {
 void _fini(void) {
 	orig_close(sockfd);  
 }
-
-
-//TODO: Dealing with errno and failure checks. 
