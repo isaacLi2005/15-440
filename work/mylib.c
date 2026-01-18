@@ -167,7 +167,8 @@ enum {
 	OP_CLOSE = 3, 
 	OP_LSEEK = 4, 
 	OP_READ = 5, 
-	OP_STAT = 6
+	OP_STAT = 6, 
+	OP_UNLINK = 7
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
@@ -726,7 +727,7 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 	int32_t stat_return = (int32_t)(ntohl(stat_return_network)); 
 	int32_t stat_errno = (int32_t)(ntohl(errno_network)); 
 
-	if (stat_return <= 0) {
+	if (stat_return < 0) {
 		errno = stat_errno; 
 		return -1; 
 	}
@@ -746,6 +747,10 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 
 	int stat_return = rpc_recv_stat_response(sockfd, statbuf); 
 	return stat_return; 
+}
+
+rpc_send_unlink(int sockfd, const char* pathname) {
+
 }
 
 int unlink(const char *pathname) {

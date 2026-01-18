@@ -27,7 +27,8 @@ enum {
 	OP_CLOSE = 3, 
 	OP_LSEEK = 4, 
 	OP_READ = 5, 
-    OP_STAT = 6
+	OP_STAT = 6, 
+	OP_UNLINK = 7
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -283,6 +284,22 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
     memcpy(&count_received, payload + 4, 8); 
     size_t count = (size_t)(count_received); 
 
+    if (count == 0) {
+        int64_t read_result = 0; 
+        uint32_t errno_network = htonl(0); 
+
+        uint8_t* response = malloc(12); 
+        memcpy(response, &read_result, 8); 
+        memcpy(response + 8, &errno_network, 4); 
+        int rc = (send_all(sessfd, response, 12)); 
+        free(response); 
+        if (rc < 0) {
+            return -1; 
+        } else {
+            return 0; 
+        }
+    }
+
     void* read_buf = malloc(count); 
     if (read_buf == NULL) {
         return -1; 
@@ -310,6 +327,7 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
     uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + data_length);
     if (response_buf == NULL) {
         free(response_buf);
+        free(read_buf);
         return -1; 
     }
 
