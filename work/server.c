@@ -119,22 +119,25 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
 }
 
 static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
-    // [server_fd, 4][n_bytes, 4][write_buf, n_bytes]
-    if (payload_len < 8) {
+    // [server_fd, 4][n_bytes, 8][write_buf, n_bytes]
+    if (payload_len < 12) {
         fprintf(stderr, "Write payload too short: %u \n", payload_len); 
         return -1; 
     }
 
-    uint32_t server_fd_network, n_bytes_network; 
+    uint32_t server_fd_network; 
+    uint64_t n_bytes; 
     memcpy(&server_fd_network, payload, 4); 
-    memcpy(&n_bytes_network, payload + 4, 4);
+    memcpy(&n_bytes, payload + 4, 8);
 
     int32_t server_fd = (int32_t)ntohl(server_fd_network); 
-    uint32_t n_bytes = ntohl(n_bytes_network); 
 
-    if ((uint32_t)8 + n_bytes != payload_len) {
-        fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%u\n", payload_len, n_bytes);
+    if ((uint64_t)12 + n_bytes != (uint64_t)payload_len) {
+        fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%llu\n", payload_len, n_bytes);
         return -1;
+    } else if (n_bytes > UINT32_MAX) {
+        fprintf(stderr, "Write payload too big \n");
+        return -1; 
     }
 
     uint8_t* write_bytes = (uint8_t*)malloc(n_bytes); 
@@ -142,7 +145,7 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         fprintf(stderr, "malloc fails in write");
         return -1; 
     }
-    memcpy(write_bytes, payload + 8, n_bytes); 
+    memcpy(write_bytes, payload + 12, n_bytes); 
     ssize_t write_result = write(server_fd, write_bytes, n_bytes); 
     free(write_bytes); 
 
@@ -153,18 +156,18 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         ret_errno = 0;
     }
 
-    uint32_t write_result_network = htonl((uint32_t)(int32_t)write_result);
     uint32_t errno_network = htonl((uint32_t)ret_errno);
 
-    // Write response: [result, 4][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(8);
+    // Write response: [result, 8][errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(12);
     if (response_buf == NULL) {
         return -1; 
     }
-    memcpy(response_buf, &write_result_network, 4);
-    memcpy(response_buf + 4, &errno_network, 4); 
+    int64_t write_result_for_sending = (int64_t)write_result;
+    memcpy(response_buf, &write_result_for_sending, 8);
+    memcpy(response_buf + 8, &errno_network, 4); 
 
-    if (send_all(sessfd, response_buf, 8) < 0) {
+    if (send_all(sessfd, response_buf, 12) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -230,6 +233,13 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     memcpy(&whence_network, payload + 12, 4); 
     int32_t whence = (int32_t)(ntohl(whence_network)); 
 
+    fprintf(stderr, "SERVER lseek recv: server_fd=%d offset=%lld (0x%llx) whence=%d\n",
+        server_fd,
+        (long long)offset,
+        (unsigned long long)offset,
+        whence);
+    fflush(stderr);
+
     off_t lseek_result = lseek(server_fd, offset, whence); 
     int32_t lseek_errno; 
     if (lseek_result < 0) {
@@ -237,7 +247,6 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     } else {
         lseek_errno = 0; 
     }
-
 
     uint32_t errno_network = htonl((uint32_t)lseek_errno);
 
@@ -317,7 +326,6 @@ static int handle_one_message(int sessfd) {
 
 // Recall: argc is number or arguments, argv is the array of char* strings. 
 int main(int argc, char** argv) {
-    fprintf(stderr, "SERVER VERSION 10:00\n");
     fflush(stderr);
 
     (void)argc;

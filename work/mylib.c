@@ -382,7 +382,7 @@ int close(int fd) {
 }
 
 static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size_t n_bytes) {
-	//[server_fd, 4][n_bytes, 4][write_buf, n_bytes]
+	//[server_fd, 4][n_bytes, 8][write_buf, n_bytes]
 
 	if (n_bytes > UINT32_MAX) {
 		fprintf(stderr, "Too many bytes in write call \n"); 
@@ -390,7 +390,7 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	}
 
 	// Payload = fd + payload
-	uint32_t payload_len = (uint32_t)(4 + 4 + n_bytes); 
+	uint32_t payload_len = (uint32_t)(4 + 8 + n_bytes); 
 	uint32_t total_len = 8 + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
@@ -411,9 +411,8 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	memcpy(buf + buf_offset, &server_fd_network, 4); 
 	buf_offset += 4; 
 
-	uint32_t n_bytes_network = htonl((uint32_t)(n_bytes)); 
-	memcpy(buf + buf_offset, &n_bytes_network, 4); 
-	buf_offset += 4; 
+	memcpy(buf + buf_offset, &n_bytes, 8); 
+	buf_offset += 8; 
 
 	memcpy(buf + buf_offset, write_buf, n_bytes); 
 	buf_offset += n_bytes; 
@@ -432,14 +431,17 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 
 }
 
+//TODO: size_t is actually 64 bits. 
+
 static ssize_t rpc_recv_write_response(int sockfd) {
-	// Response in form of [int, 4][errno, 4] in network byte order. 
+	// Response in form of [ssize_t, 8][errno, 4] in network byte order. 
 	// Assumes this is a function like read, write, close where the int 
 	// implies whether the errno is used. 
-	uint32_t int_network, errno_network; 
+	int64_t size;
+	uint32_t errno_network; 
 	int rc; 
 
-	rc = recv_all(sockfd, &int_network, 4); 
+	rc = recv_all(sockfd, &size, 8); 
 	if (rc <= 0) {
 		return -1; 
 	}
@@ -449,14 +451,13 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 		return -1; 
 	}
 
-	int32_t int_result = (int32_t)(ntohl(int_network));
 	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
 
-	if (int_result < 0) {
+	if (size < 0) {
 		errno = received_errno; 
 		return -1; 
 	} else {
-		return (ssize_t)int_result; 
+		return (ssize_t)size; 
 	}
 }
 
@@ -474,6 +475,7 @@ ssize_t write(int fd, const void* buf, size_t n_bytes) {
 	ssize_t write_return = (ssize_t)rpc_recv_write_response(sockfd); 
 	return write_return; 
 }
+
 
 ssize_t read(int fd, void *buf, size_t count) {
 	// const char* msg = "read\n";
