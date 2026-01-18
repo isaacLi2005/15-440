@@ -161,7 +161,12 @@ ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
 
 
 // Op codes 
-enum {OP_OPEN = 1, OP_WRITE = 2, OP_CLOSE = 3};
+enum {
+	OP_OPEN = 1, 
+	OP_WRITE = 2, 
+	OP_CLOSE = 3, 
+	OP_LSEEK = 4 
+};
 
 static int send_all(int fd, const void *buf, size_t n) {
     const uint8_t *p = (const uint8_t *)buf;
@@ -285,34 +290,6 @@ static int rpc_recv_int_and_errno_response(int sockfd) {
 	}
 }
 
-/*
-static int rpc_recv_open_response(int sockfd) {
-	// Response in form of [fd, 4][errno, 4] in network byte order. 
-	uint32_t fd_network, errno_network; 
-	int rc; 
-
-	rc = recv_all(sockfd, &fd_network, 4); 
-	if (rc <= 0) {
-		return -1; 
-	}
-
-	rc = recv_all(sockfd, &errno_network, 4); 
-	if (rc <= 0) {
-		return -1; 
-	}
-
-	int32_t received_fd = (int32_t)(ntohl(fd_network));
-	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
-
-	if (received_fd < 0) {
-		errno = received_errno; 
-		return -1; 
-	} else {
-		return (int)received_fd; 
-	}
-}
-*/
-
 // This is our replacement for the open function from libc.
 int open(const char *pathname, int flags, ...) {
 	mode_t m=0;
@@ -385,34 +362,6 @@ static int rpc_send_close(int sockfd, int fd) {
 	return 0;
 }
 
-/*
-static int rpc_recv_close_response(int sockfd) {
-	// Response in form of [close_ret, 4][errno, 4] in network byte order. 
-	uint32_t close_ret_network, errno_network; 
-	int rc; 
-
-	rc = recv_all(sockfd, &close_ret_network, 4); 
-	if (rc <= 0) {
-		return -1; 
-	}
-
-	rc = recv_all(sockfd, &errno_network, 4); 
-	if (rc <= 0) {
-		return -1; 
-	}
-
-	int32_t received_close_ret = (int32_t)(ntohl(close_ret_network));
-	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
-
-	if (received_close_ret < 0) {
-		errno = received_errno; 
-		return -1; 
-	} else {
-		return (int)received_close_ret; 
-	}
-}
-*/
-
 int close(int fd) {
 	if (is_remote_fd(fd) == false) {
 		return orig_close(fd); 
@@ -429,7 +378,7 @@ int close(int fd) {
 		free_remote_fd(fd); 
 		return close_return; 
 	}
-	
+
 }
 
 static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size_t n_bytes) {
@@ -511,8 +460,6 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 	}
 }
 
-
-
 ssize_t write(int fd, const void* buf, size_t n_bytes) {
 	if (is_remote_fd(fd) == false) {
 		return orig_write(fd, buf, n_bytes); 
@@ -526,7 +473,6 @@ ssize_t write(int fd, const void* buf, size_t n_bytes) {
 
 	ssize_t write_return = (ssize_t)rpc_recv_write_response(sockfd); 
 	return write_return; 
-	
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
@@ -536,13 +482,94 @@ ssize_t read(int fd, void *buf, size_t count) {
 	return orig_read(fd, buf, count);
 }
 
+static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
+	//[server_fd, 4][offset, 8][whence, 4]
 
+	// Payload = int + off_t + int
+	uint32_t payload_len = (uint32_t)(4 + 8 + 4); 
+	uint32_t total_len = 8 + payload_len; 
+
+	uint8_t* buf = create_rpc_buf(total_len); 
+
+	size_t buf_offset = 0;
+
+	// Header start
+	uint32_t op_number_network = htonl((uint32_t)OP_LSEEK); 
+	memcpy(buf + buf_offset, &op_number_network, 4); 
+	buf_offset += 4; 
+
+	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
+	memcpy(buf+buf_offset, &payload_len_network, 4); 
+	buf_offset += 4; 
+
+	// Payload start
+	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
+	memcpy(buf + buf_offset, &server_fd_network, 4); 
+	buf_offset += 4; 
+
+	//TODO: There is no htonll function so we have to just hope this works. 
+	off_t off = offset;
+	memcpy(buf + buf_offset, &off, 8);
+	buf_offset += 8;
+
+	uint32_t whence_network = htonl((uint32_t)whence);
+	memcpy(buf + buf_offset, &whence_network, 4); 
+	buf_offset += 4; 
+
+
+	// Send the buffer. 
+	int rc = send_all(sockfd, buf, total_len); 
+
+	free_rpc_buf(buf); 
+
+	if (rc < 0) {
+		return -1;
+	}
+
+	return 0; 
+}
+
+static off_t rpc_recv_lseek_response(int sockfd) {
+	// [off_t, 8][errno, 4]
+	off_t seeked; 
+	uint32_t errno_network; 
+
+	int rc; 
+
+	rc = recv_all(sockfd, &seeked, 8); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	rc = recv_all(sockfd, &errno_network, 4); 
+	if (rc <= 0) {
+		return -1; 
+	}
+
+	int32_t received_errno = (int32_t)(ntohl(errno_network)); 
+
+	if (seeked == (off_t)(-1)) {
+		errno = received_errno; 
+		return (off_t)(-1); 
+	} else {
+		return seeked; 
+	}
+}
 
 off_t lseek(int fd, off_t offset, int whence) {
 	// const char* msg = "lseek\n";
+	if (is_remote_fd(fd) == false) {
+		return orig_lseek(fd, offset, whence); 
+	}
 
-	// rv = send(sockfd, msg, strlen(msg), 0);
-	return orig_lseek(fd, offset, whence);
+	int server_fd = client_fd_to_server_fd(fd); 
+
+	if (rpc_send_lseek(sockfd, server_fd, offset, whence) < 0) {
+		return -1; 
+	}
+
+	off_t lseek_return = rpc_recv_lseek_response(sockfd); 
+	return lseek_return; 
 }
 
 int stat(const char *restrict path, struct stat *restrict statbuf) {
@@ -552,12 +579,14 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 	return orig_stat(path, statbuf);
 }
 
+/*
 int __xstat(int ver, const char *path, struct stat *statbuf) {
     // const char *msg = "__xstat\n";
 
     // send(sockfd, msg, strlen(msg), 0);
     return orig___xstat(ver, path, statbuf);
 }
+*/
 
 int unlink(const char *pathname) {
 	// const char* msg = "unlink\n";

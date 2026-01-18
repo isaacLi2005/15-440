@@ -16,10 +16,17 @@
 #include <sys/types.h>
 #include <sys/stat.h> 
 
+#include "../include/dirtree.h"
+
 
 #define MAXMSGLEN 100 
 
-enum {OP_OPEN = 1, OP_WRITE = 2, OP_CLOSE = 3};
+enum {
+	OP_OPEN = 1, 
+	OP_WRITE = 2, 
+	OP_CLOSE = 3, 
+	OP_LSEEK = 4 
+};
 
 static int recv_all(int fd, void* buf, size_t n) {
     uint8_t* p = (uint8_t*)buf; 
@@ -204,6 +211,51 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
     }
 }
 
+static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+        if (payload_len != 16) {
+        fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
+        return -1;
+    }
+
+    uint32_t fd_network; 
+    memcpy(&fd_network, payload, 4); 
+    int server_fd = (int)(ntohl(fd_network)); 
+
+    //TODO: 64 bits couldn't be handled by htonl. 
+    int64_t off_beamed; 
+    memcpy(&off_beamed, payload + 4, 8); 
+    off_t offset = (off_t)(off_beamed); 
+
+    uint32_t whence_network; 
+    memcpy(&whence_network, payload + 12, 4); 
+    int32_t whence = (int32_t)(ntohl(whence_network)); 
+
+    off_t lseek_result = lseek(server_fd, offset, whence); 
+    int32_t lseek_errno; 
+    if (lseek_result < 0) {
+        lseek_errno = (int32_t)errno; 
+    } else {
+        lseek_errno = 0; 
+    }
+
+
+    uint32_t errno_network = htonl((uint32_t)lseek_errno);
+
+    // lseek response: [offset, 8][errno, 4]
+    uint8_t* response_buf = (uint8_t*)malloc(12);
+    int64_t result_beamed = (int64_t)lseek_result; 
+    memcpy(response_buf, &result_beamed, 8);
+    memcpy(response_buf + 8, &errno_network, 4); 
+
+    if (send_all(sessfd, response_buf, 12) < 0) {
+        free(response_buf);
+        return -1;
+    } else {
+        free(response_buf);
+        return 0;
+    }
+}
+
 
 static int handle_one_message(int sessfd) {
     // [opcode, 4][payload_len, 4]
@@ -245,6 +297,9 @@ static int handle_one_message(int sessfd) {
         case OP_CLOSE:
             ret = handle_close_payload(sessfd, payload, payload_len); 
             break;
+        case OP_LSEEK: 
+            ret = handle_lseek_payload(sessfd, payload, payload_len); 
+            break; 
         default: 
             fprintf(stderr, "Unknown opcode %u in server.c \n", op_number); 
             ret = -1; 
