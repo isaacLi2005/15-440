@@ -947,6 +947,75 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 	return 0; 
 }
 
+static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdirs) {
+	struct dirtreenode* node = (struct dirtreenode*)malloc(sizeof(struct dirtree)); 
+	if (node == NULL) {
+		return NULL; 
+	}
+
+	memcpy(node->name, name, strlen(name) + 1); 
+	if (node->name == NULL) {
+		free(node); 
+		return NULL; 
+	}
+
+	node->num_subdirs = num_subdirs; 
+	if (num_subdirs < 0) {
+		return NULL; 
+	} else if (num_subdirs == 0) {
+		n->subdirs = NULL; 
+	} else {
+		assert(num_subdirs > 0); 
+		n->subdirs = (struct dirtrenode**)malloc((size_t)num_subdirs, sizeof(struc dirtrenode*)); 
+		if (n->subdirs == NULL) {
+			free(node->name); 
+			free(node); 
+			return NULL; 
+		}
+	}
+
+	return node; 
+}
+
+typedef struct node_stack_entry {
+	struct dirtreenode* node; 
+	uint32_t unassigned_children; 
+} node_stack_entry; 
+
+typedef struct {
+	node_stack_entry* elems; 
+	size_t size; 
+	size_t capacity; 
+} node_stack; 
+
+static node_struct* create_node_stack(void) {
+	node_struct* stack = (node_stack*)malloc(sizeof(node_stack)); 
+	if (stack == NULL) {
+		return NULL; 
+	}
+
+	
+
+}
+
+static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
+	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
+
+	uint64_t node_count, node_bytes; 
+	int getdirtree_errno; 
+
+	memcpy(&node_count, message, 8); 
+	memcpy(&node_bytes, message + 8, 8); 
+	memcpy(&getdirtree_errno, message + 16, 4); 
+
+	if (node_count == 0) {
+		assert(node_bytes == 0); 
+		errno = getdirtree_errno; 
+		return NULL; 
+	}
+
+
+}
 
 struct dirtreenode* getdirtree(const char *path) {
     // const char *msg = "getdirtree\n";

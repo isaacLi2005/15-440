@@ -32,7 +32,7 @@ enum {
 	OP_STAT = 6, 
 	OP_UNLINK = 7,
 	OP_GETDIRENTRIES = 8, 
-	OP_GETDIRTREE = 9; 
+	OP_GETDIRTREE = 9 
 };
 
 static int recv_all(int fd, void* buf, size_t n) {
@@ -538,12 +538,98 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
     }
 }
 
-uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot) {
-    // Takes a tree structure and compresses it. 
+static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, size_t* total_nodal_bytes) {
+    if (node == NULL) {
+        return; 
+    }
 
+    *node_count += 1; 
     
+    size_t node_name_len = strlen(node->name) + 1; 
 
-    return NULL; 
+    // A node is [num_subdirs, 4][name_len, 8][name, name_len]
+    *total_nodal_bytes += 4 + 8 + node_name_len; 
+
+
+    for (int i = 0; i < node->num_subdirs; i++) {
+        measure_dirtree_size(node->subdirs[i], node_count, total_nodal_bytes); 
+    }
+}
+
+static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_t* offset_p) {
+    // Returns 0 for done, -1 for errors. 
+    if (node == NULL) {
+        return 0; 
+    }
+
+    size_t node_name_length = strlen(node->name) + 1; //Include '\0'. 
+
+    //Nodes in the form of [num_children, 4][name_len, 8][name, name_len] 
+    int num_subdirs = node->num_subdirs; 
+    memcpy(nodal_message + *offset_p, &num_subdirs, 4); 
+    *offset_p += 4; 
+
+    memcpy(nodal_message + *offset_p, &node_name_length, 8); 
+    *offset_p += 8; 
+
+    memcpy(nodal_message + *offset_p, node->name, node_name_length); 
+    *offset_p += node_name_length; 
+
+    for (int i = 0; i < n->num_subdirs; i++) {
+        marshal_nodes(node->subdirs[i], nodal_message, offset_p); 
+    }
+
+
+}
+
+static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint32_t* bytes_to_send, int getdirtree_errno) {
+    // Serialize a tree structure. 
+
+    // [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
+    if (bytes_to_send == NULL) {
+        return NULL; 
+    }
+    *bytes_to_send = 0; 
+
+    if (dirtreeroot == NULL) {
+        return NULL; 
+    }
+
+    size_t total_nodes = 0; 
+    size_t nodal_bytes = 0; 
+    measure_dirtree_size(dirtreeroot, &total_nodes, &nodal_bytes); 
+
+    size_t total_message_bytes = 8 + 8 + 4 + nodal_bytes; 
+    if (total_message_bytes > UINT32_MAX) {
+        return NULL; 
+    }
+
+    uint8_t* message = (uint8_t*)malloc(total_message_bytes); 
+    if (message == NULL) {
+        return NULL; 
+    }
+
+    size_t message_offset = 0; 
+
+    memcpy(message + message_offset, &total_nodes, 8);
+    message_offset += 8; 
+
+    memcpy(message + message_offset, &bytes_to_send, 8); 
+    message_offset += 8; 
+
+    memcpy(message + message_offset, &getdirtree_errno, 4); 
+    message_offset += 4; 
+
+    size_t* nodes_message_offset_p = (size_t*)malloc(sizeof(size_t)); 
+    marshal_nodes(dirtreeroot, message + message_offset, nodes_message_offset_p);
+    message_offset += *nodes_message_offset_p;
+    free(nodes_message_offset_p); 
+
+    assert(message_offset == total_message_bytes); 
+
+    *bytes_to_send = total_message_bytes; 
+
+    return message; 
 }
 
 static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
@@ -565,14 +651,31 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
     memcpy(path, payload + 4, path_length); 
 
     struct dirtreenode* getdirtree_result = getdirtree(path);  
+    int getdirtree_errno; 
+    if (getdirtree_result == NULL) {
+        getdirtree_errno = errno; 
+    } else {
+        getdirtree_errno = 0; 
+    }
+
 
     free(path); 
 
 
+    // [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
+    uint32_t message_size = 0; 
+    uint8_t* response_buf = convert_dirtree_to_message(getdirtree_result, &message_size, getdirtree_errno); 
+
     // No reason to keep it around on the server; it's the client's problem now. 
-    freedirtree(getdirtree_result); 
+    freedirtree(getdirtree_result);
 
-
+    if (send_all(sessfd, response_buf, message_size) < 0) {
+        free(response_buf);  
+        return -1; 
+    } else {
+        free(response_buf); 
+        return 0; 
+    }
 
 }
 
