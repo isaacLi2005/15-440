@@ -1062,6 +1062,7 @@ void destroy_node_stack(node_stack* stack) {
 	free(stack); 
 }
 
+// TODO: Change to use a sockfd and be the recv function. 
 static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
 
@@ -1125,7 +1126,6 @@ static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 
 	destroy_node_stack(stack); 
 	return root; 
-
 }
 
 struct dirtreenode* getdirtree(const char *path) {
