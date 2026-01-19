@@ -1142,6 +1142,7 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	}
 
 	destroy_node_stack(stack); 
+	free(nodal_message); 
 	return root; 
 }
 

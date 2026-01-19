@@ -639,6 +639,8 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint
 static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
     //[path_length, 4][path, path_length]
 
+
+
     if (payload_len < 4) {
         fprintf(stderr, "Wrong getdirtree payload size: %u\n", payload_len);
         return -1;
@@ -662,7 +664,6 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
         getdirtree_errno = 0; 
     }
 
-
     free(path); 
 
 
@@ -671,7 +672,9 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
     uint8_t* response_buf = convert_dirtree_to_message(getdirtree_result, &message_size, getdirtree_errno); 
 
     // No reason to keep it around on the server; it's the client's problem now. 
-    freedirtree(getdirtree_result);
+    if (getdirtree_result != NULL) {
+        freedirtree(getdirtree_result);
+    }
 
     if (send_all(sessfd, response_buf, message_size) < 0) {
         free(response_buf);  
