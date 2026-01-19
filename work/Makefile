@@ -1,8 +1,8 @@
-CFLAGS := -Wall -Wextra -O2 -g -fPIC
-LDLIBS := -ldl -ldirtree
+CFLAGS  := -Wall -Wextra -O2 -g -fPIC
+LDFLAGS := -L../lib -Wl,-rpath,$(abspath ../lib)
+LDLIBS  := -ldl -ldirtree
 
 .PHONY: all clean
-
 all: mylib.so server
 
 mylib.o: mylib.c
@@ -12,10 +12,10 @@ mylib.so: mylib.o
 	gcc -shared -nostartfiles -o mylib.so mylib.o -ldl
 
 server.o: server.c
-	gcc -Wall -Wextra -O2 -g -c -o $@ $<
+	gcc $(CFLAGS) -c -o $@ $<
 
 server: server.o
-	gcc -o $@ $^
+	gcc $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
 	rm -f *.o mylib.so server

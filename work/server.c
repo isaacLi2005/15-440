@@ -20,6 +20,8 @@
 
 #include <dirent.h>
 
+#include <assert.h>
+
 
 #define MAXMSGLEN 100 
 
@@ -547,8 +549,8 @@ static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, s
     
     size_t node_name_len = strlen(node->name) + 1; 
 
-    // A node is [num_subdirs, 4][name_len, 8][name, name_len]
-    *total_nodal_bytes += 4 + 8 + node_name_len; 
+    // A node is [num_subdirs, 4][name_len, 4][name, name_len]
+    *total_nodal_bytes += 4 + 4 + node_name_len; 
 
 
     for (int i = 0; i < node->num_subdirs; i++) {
@@ -562,23 +564,24 @@ static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_
         return 0; 
     }
 
-    size_t node_name_length = strlen(node->name) + 1; //Include '\0'. 
+    uint32_t node_name_length = (uint32_t)strlen(node->name) + 1; //Include '\0'. 
 
     //Nodes in the form of [num_children, 4][name_len, 8][name, name_len] 
     int num_subdirs = node->num_subdirs; 
     memcpy(nodal_message + *offset_p, &num_subdirs, 4); 
     *offset_p += 4; 
 
-    memcpy(nodal_message + *offset_p, &node_name_length, 8); 
-    *offset_p += 8; 
+    memcpy(nodal_message + *offset_p, &node_name_length, 4); 
+    *offset_p += 4; 
 
     memcpy(nodal_message + *offset_p, node->name, node_name_length); 
     *offset_p += node_name_length; 
 
-    for (int i = 0; i < n->num_subdirs; i++) {
+    for (int i = 0; i < node->num_subdirs; i++) {
         marshal_nodes(node->subdirs[i], nodal_message, offset_p); 
     }
 
+    return 0; 
 
 }
 
@@ -591,20 +594,20 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint
     }
     *bytes_to_send = 0; 
 
-    if (dirtreeroot == NULL) {
-        return NULL; 
-    }
-
     size_t total_nodes = 0; 
     size_t nodal_bytes = 0; 
-    measure_dirtree_size(dirtreeroot, &total_nodes, &nodal_bytes); 
+
+    if (dirtreeroot != NULL) {
+        measure_dirtree_size(dirtreeroot, &total_nodes, &nodal_bytes); 
+    }
+
 
     size_t total_message_bytes = 8 + 8 + 4 + nodal_bytes; 
     if (total_message_bytes > UINT32_MAX) {
         return NULL; 
     }
 
-    uint8_t* message = (uint8_t*)malloc(total_message_bytes); 
+    uint8_t* message = (uint8_t*)malloc((size_t)total_message_bytes); 
     if (message == NULL) {
         return NULL; 
     }
@@ -614,20 +617,21 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint
     memcpy(message + message_offset, &total_nodes, 8);
     message_offset += 8; 
 
-    memcpy(message + message_offset, &bytes_to_send, 8); 
+    memcpy(message + message_offset, &nodal_bytes, 8); 
     message_offset += 8; 
 
     memcpy(message + message_offset, &getdirtree_errno, 4); 
     message_offset += 4; 
 
-    size_t* nodes_message_offset_p = (size_t*)malloc(sizeof(size_t)); 
-    marshal_nodes(dirtreeroot, message + message_offset, nodes_message_offset_p);
-    message_offset += *nodes_message_offset_p;
-    free(nodes_message_offset_p); 
+    if (dirtreeroot != NULL) {
+        size_t node_offset = 0; 
+        marshal_nodes(dirtreeroot, message + message_offset, &node_offset); 
+        message_offset += node_offset; 
+    }
 
     assert(message_offset == total_message_bytes); 
 
-    *bytes_to_send = total_message_bytes; 
+    *bytes_to_send = (uint32_t)total_message_bytes; 
 
     return message; 
 }

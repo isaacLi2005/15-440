@@ -957,6 +957,7 @@ static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdir
 		return NULL; 
 	}
 
+	size_t name_len = strlen(name) + 1; 
     node->name = (char*)malloc(name_len);
     if (!node->name) {
         free(node);
@@ -969,11 +970,11 @@ static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdir
 	if (num_subdirs < 0) {
 		return NULL; 
 	} else if (num_subdirs == 0) {
-		n->subdirs = NULL; 
+		node->subdirs = NULL; 
 	} else {
 		assert(num_subdirs > 0); 
-		n->subdirs = (struct dirtrenode**)calloc((size_t)num_subdirs, sizeof(struc dirtrenode*)); 
-		if (n->subdirs == NULL) {
+		node->subdirs = (struct dirtreenode**)calloc((size_t)num_subdirs, sizeof(struct dirtreenode*)); 
+		if (node->subdirs == NULL) {
 			free(node->name); 
 			free(node); 
 			return NULL; 
@@ -1002,7 +1003,7 @@ static node_stack* create_node_stack(void) {
 	}
 
 	stack->data = (node_stack_entry*)malloc(4 * sizeof(node_stack_entry)); 
-	if (s->data == NULL) {
+	if (stack->data == NULL) {
 		free(stack); 
 		return NULL; 
 	}
@@ -1063,16 +1064,24 @@ void destroy_node_stack(node_stack* stack) {
 }
 
 // TODO: Change to use a sockfd and be the recv function. 
-static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
+static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
 
-	uint64_t node_count = 0, 
+	uint64_t node_count = 0; 
 	uint64_t node_bytes = 0; 
 	int getdirtree_errno; 
 
-	memcpy(&node_count, message, 8); 
-	memcpy(&node_bytes, message + 8, 8); 
-	memcpy(&getdirtree_errno, message + 16, 4); 
+	if (recv_all(sockfd, &node_count, 8) <= 0) {
+		return NULL; 
+	}
+	
+	if (recv_all(sockfd, &node_bytes, 8) <= 0) {
+		return NULL; 
+	}
+	
+	if (recv_all(sockfd, &getdirtree_errno, 4) <= 0) {
+		return NULL; 
+	}
 
 	if (node_count == 0) {
 		assert(node_bytes == 0); 
@@ -1080,14 +1089,22 @@ static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 		return NULL; 
 	}
 
+	uint8_t* nodal_message = (uint8_t*)malloc((size_t)node_bytes); 
+	if (nodal_message == NULL) {
+		return NULL; 
+	}
+	if (recv_all(sockfd, nodal_message, node_bytes) <= 0) {
+		return NULL; 
+	}
+
+	uint8_t* current_p = nodal_message; 
+
 	node_stack* stack = create_node_stack(); 
 	if (stack == NULL) {
 		return NULL; 
 	}
 
 	struct dirtreenode* root = NULL; 
-
-	uint8_t* current_p = message + 20; 
 
 
 	for (uint64_t i = 0; i < node_count; i++) {
@@ -1101,26 +1118,26 @@ static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 
 		char* name = (char*)current_p; 
 
-		p += name_len; 
+		current_p += name_len; 
 
 		struct dirtreenode* node = allocate_dirtreenode(name, (int)num_subdirs); 
 
 		node_stack_entry* parent_entry = node_stack_top(stack); 
 		if (parent_entry == NULL) {
 			root = node; 
+		} else {
+			int index = parent_entry->node->num_subdirs - parent_entry->unassigned_children; 
+			parent_entry->node->subdirs[index] = node; 
+			parent_entry->unassigned_children -= 1; 
 		}
+			node_stack_entry entry; 
+			entry.node = node; 
+			entry.unassigned_children = (uint32_t)node->num_subdirs; 
+			node_stack_push(stack, entry); 
 
-		int index = parent_entry->node->num_subdirs - parent_entry->unassigned_children; 
-		parent_entry->node->subdirs[index] = node; 
-		parent_entry->unassigned_children -= 1; 
-
-		node_stack_entry entry; 
-		entry.node = node; 
-		entry.unassigned_children = (uint32_t)node->num_subdirs; 
-		node_stack_push(stack, entry); 
 
 		while (stack->size > 0 && stack->data[stack->size-1].unassigned_children == 0) {
-			stack->size -= 1; 
+			stack->size -= 1; //Not a pop as we don't care about the elem. 
 		}
 	}
 
@@ -1129,22 +1146,20 @@ static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 }
 
 struct dirtreenode* getdirtree(const char *path) {
-    // const char *msg = "getdirtree\n";
+	if (rpc_send_getdirtree(sockfd, path) < 0) {
+		return NULL; 
+	} 
 
-    // send(sockfd, msg, strlen(msg), 0);
-    return orig_getdirtree(path);
+	struct dirtreenode* getdirtree_result = rpc_recv_getdirtree_response(sockfd);
+    return getdirtree_result;
 }
 
 void freedirtree(struct dirtreenode *dt) {
-    // const char *msg = "freedirtree\n";
-	
-    // send(sockfd, msg, strlen(msg), 0);
     orig_freedirtree(dt);
 }
 
 // This function is automatically called when program is started
 void _init(void) {
-
 
 	// set function pointer orig_open to point to the original open function
 	orig_open = dlsym(RTLD_NEXT, "open");
