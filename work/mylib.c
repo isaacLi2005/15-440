@@ -948,25 +948,31 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 }
 
 static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdirs) {
-	struct dirtreenode* node = (struct dirtreenode*)malloc(sizeof(struct dirtree)); 
+	if (num_subdirs < 0) {
+		return NULL;
+	}
+
+	struct dirtreenode* node = (struct dirtreenode*)malloc(sizeof(struct dirtreenode)); 
 	if (node == NULL) {
 		return NULL; 
 	}
 
-	memcpy(node->name, name, strlen(name) + 1); 
-	if (node->name == NULL) {
-		free(node); 
-		return NULL; 
-	}
+    node->name = (char*)malloc(name_len);
+    if (!node->name) {
+        free(node);
+        return NULL;
+    }
+    memcpy(node->name, name, name_len);
 
 	node->num_subdirs = num_subdirs; 
+
 	if (num_subdirs < 0) {
 		return NULL; 
 	} else if (num_subdirs == 0) {
 		n->subdirs = NULL; 
 	} else {
 		assert(num_subdirs > 0); 
-		n->subdirs = (struct dirtrenode**)malloc((size_t)num_subdirs, sizeof(struc dirtrenode*)); 
+		n->subdirs = (struct dirtrenode**)calloc((size_t)num_subdirs, sizeof(struc dirtrenode*)); 
 		if (n->subdirs == NULL) {
 			free(node->name); 
 			free(node); 
@@ -977,31 +983,90 @@ static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdir
 	return node; 
 }
 
+// TODO: I got help defining a stack with ChatGPT. 
 typedef struct node_stack_entry {
 	struct dirtreenode* node; 
 	uint32_t unassigned_children; 
 } node_stack_entry; 
 
 typedef struct {
-	node_stack_entry* elems; 
+	node_stack_entry* data; 
 	size_t size; 
 	size_t capacity; 
 } node_stack; 
 
-static node_struct* create_node_stack(void) {
-	node_struct* stack = (node_stack*)malloc(sizeof(node_stack)); 
+static node_stack* create_node_stack(void) {
+	node_stack* stack = (node_stack*)malloc(sizeof(node_stack)); 
 	if (stack == NULL) {
 		return NULL; 
 	}
 
-	
+	stack->data = (node_stack_entry*)malloc(4 * sizeof(node_stack_entry)); 
+	if (s->data == NULL) {
+		free(stack); 
+		return NULL; 
+	}
 
+	stack->size = 0; 
+	stack->capacity = 4; 
+
+	return stack; 
+}
+
+static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
+    if (stack->size == stack->capacity) {
+        size_t new_capacity = stack->capacity * 2;
+        node_stack_entry* new_data =
+            (node_stack_entry*)malloc(new_capacity * sizeof(*new_data));
+        if (new_data == NULL) {
+			return -1;
+		}
+
+        memcpy(new_data, stack->data, stack->size * sizeof(*new_data)); 
+        free(stack->data);
+
+        stack->data = new_data;
+        stack->capacity = new_capacity;
+    }
+
+    stack->data[stack->size] = pushed_elem;
+    stack->size += 1;
+    return 0;
+}
+
+static int node_stack_pop(node_stack* stack, node_stack_entry* out) {
+	if (stack->size == 0) {
+		return -1; 
+	}
+
+	stack->size -= 1; 
+
+	// This should copy data into the out. 
+	*out = stack->data[stack->size]; 
+
+	return 0; 
+}
+
+static node_stack_entry* node_stack_top(node_stack* stack) {
+    if (!stack || stack->size == 0) {
+		return NULL;
+	}
+    return &stack->data[stack->size - 1];
+}
+
+void destroy_node_stack(node_stack* stack) {
+	if (stack == NULL) {
+		return; 
+	}
+	free(stack->data); 
+	free(stack); 
 }
 
 static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
 
-	uint64_t node_count, node_bytes; 
+	uint64_t node_count = 0, 
+	uint64_t node_bytes = 0; 
 	int getdirtree_errno; 
 
 	memcpy(&node_count, message, 8); 
@@ -1014,6 +1079,52 @@ static struct dirtreenode* convert_message_to_dirtree(const uint8_t* message) {
 		return NULL; 
 	}
 
+	node_stack* stack = create_node_stack(); 
+	if (stack == NULL) {
+		return NULL; 
+	}
+
+	struct dirtreenode* root = NULL; 
+
+	uint8_t* current_p = message + 20; 
+
+
+	for (uint64_t i = 0; i < node_count; i++) {
+		uint32_t num_subdirs = 0; 
+		uint32_t name_len = 0; 
+
+		memcpy(&num_subdirs, current_p, 4); 
+		current_p += 4; 
+		memcpy(&name_len, current_p, 4); 
+		current_p += 4; 
+
+		char* name = (char*)current_p; 
+
+		p += name_len; 
+
+		struct dirtreenode* node = allocate_dirtreenode(name, (int)num_subdirs); 
+
+		node_stack_entry* parent_entry = node_stack_top(stack); 
+		if (parent_entry == NULL) {
+			root = node; 
+		}
+
+		int index = parent_entry->node->num_subdirs - parent_entry->unassigned_children; 
+		parent_entry->node->subdirs[index] = node; 
+		parent_entry->unassigned_children -= 1; 
+
+		node_stack_entry entry; 
+		entry.node = node; 
+		entry.unassigned_children = (uint32_t)node->num_subdirs; 
+		node_stack_push(stack, entry); 
+
+		while (stack->size > 0 && stack->data[stack->size-1].unassigned_children == 0) {
+			stack->size -= 1; 
+		}
+	}
+
+	destroy_node_stack(stack); 
+	return root; 
 
 }
 
