@@ -1,3 +1,17 @@
+/**
+ * server.c 
+ * 
+ * This file sets up the server for the assignment that is able to take in RPCs from clients. It sets up a socket and 
+ * listens to clients, forking off child processes so that we can handle those clients in parallel. This file also 
+ * includes all the helper functions necessary to interpret messages from the client. 
+ * 
+ * The format for requests from the client and responses to the client is standardized so that both sides can 
+ * understand the meaning of raw bytes sent back and forth. 
+ */
+
+
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <arpa/inet.h>
@@ -46,6 +60,9 @@ enum {
 
 void sigchld_handler(int sig) {
     /**
+     * This function handles the SIGCHLD signal, for when a forked child process has finished running, by reaping any 
+     * child processes that have finished. 
+     * 
      * This function was heavily inspired by a similiar function from the 15-213 textbook, Computer Systems - A 
      * Programmer's Perspective, Bryant et. al. 
      */
@@ -104,7 +121,22 @@ static int send_all(int fd, const void *buf, size_t n) {
 }
 
 static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
-    // Takes the payload of an open call, calls open, and sends a respose back. 
+    /**
+     * This function interprets the payload of an open RPC from the client into local arguments, passes those local 
+     * arguments to the standard library open() function, and then responds to the client with the output of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+     * 1. [flags, 4 bytes]
+     * 2. [mode, 4 bytes]
+     * 3. [path_len, 4 bytes]
+     * 4. [pathname, path_len bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [fd, 4 bytes]
+     * 2. [errno, 4 bytes]
+     */
+
     //[flags, 4][mode, 4][path_len, 4][pathname, path_len]
     if (payload_len < 12) {
         fprintf(stderr, "Open payload too short in server.c: %u\n", payload_len);
@@ -168,6 +200,21 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
 }
 
 static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of an write RPC from the client into local arguments, passes those local 
+     * arguments to the standard library write() function, and then responds to the client with the output of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+     * 1. [server_fd, 4 bytes]
+     * 2. [n_bytes, 8 bytes]
+     * 3. [write_buf, n_bytes bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [result, 8 bytes]
+     * 2. [errno, 4 bytes]
+     */
+
     // [server_fd, 4][n_bytes, 8][write_buf, n_bytes]
     if (payload_len < 12) {
         fprintf(stderr, "Write payload too short: %u \n", payload_len); 
@@ -226,7 +273,19 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
 }
 
 static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
-    // Takes the payload of an close call, calls close, and sends a respose back. 
+    /**
+     * This function interprets the payload of an close RPC from the client into local arguments, passes those local 
+     * arguments to the standard library close() function, and then responds to the client with the outputs of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+     * 1. [fd, 4 bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [fd, 4 bytes]
+     * 2. [errno, 4 bytes]
+     */
+
     //[fd, 4]
     if (payload_len != 4) {
         fprintf(stderr, "Wrong close payload size: %u\n", payload_len);
@@ -264,6 +323,21 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
 }
 
 static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of an lseek RPC from the client into local arguments, passes those local 
+     * arguments to the standard library lseek() function, and then responds to the client with the outputs of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [server_fd, 4 bytes]
+	 * 2. [offset, 8 bytes]
+	 * 3. [whence, 4 bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [offset, 8 bytes]
+     * 2. [errno, 4 bytes]
+     */
+
     if (payload_len != 16) {
         fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
         return -1;
@@ -273,7 +347,6 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     memcpy(&fd_network, payload, 4); 
     int server_fd = (int)(ntohl(fd_network)); 
 
-    //TODO: 64 bits couldn't be handled by htonl. 
     int64_t off_beamed; 
     memcpy(&off_beamed, payload + 4, 8); 
     off_t offset = (off_t)(off_beamed); 
@@ -314,8 +387,22 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     }
 }
 
-// TODO: What if a client asks for a 0 read? 
 static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of a read RPC from the client into local arguments, passes those local 
+     * arguments to the standard library read() function, and then responds to the client with the outputs of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [server_fd, 4 bytes]
+	 * 2. [count, 8 bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [read_result, 8 bytes]
+     * 2. [errno, 4 bytes]
+     * 3. [read_buf, count bytes]
+     */
+
     // [server_fd, 4][count, 8]
     if (payload_len != 12) {
         fprintf(stderr, "Wrong read payload size: %u\n", payload_len);
@@ -396,6 +483,21 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
 }
 
 static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of a stat RPC from the client into local arguments, passes those local 
+     * arguments to the standard library stat() function, and then responds to the client with the outputs of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [path_length, 4 bytes]
+	 * 2. [path, path_length bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [stat_result, 4 bytes]
+     * 2. [errno, 4 bytes]
+     * 3. [stat struct, sizeof(struct stat) bytes]
+     */
+
     //[path_length, 4][path, path_length]
 
     if (payload_len < 4) {
@@ -450,6 +552,20 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
 }
 
 static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of an unlink RPC from the client into local arguments, passes those local 
+     * arguments to the standard library unlink() function, and then responds to the client with the outputs of the 
+     * standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [path_length, 4 bytes]
+	 * 2. [path, path_length bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [unlink_result, 4 bytes]
+     * 2. [unlink_errno, 4 bytes]
+     */
+
     //[path_length, 4][path, path_length]
 
     if (payload_len < 4) {
@@ -501,6 +617,23 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
 }
 
 static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of an getdirentries RPC from the client into local arguments, passes those 
+     * local arguments to the standard library getdirentries() function, and then responds to the client with the 
+     * outputs of the standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [server_fd, 4 bytes]
+     * 2. [nbytes, 8 bytes]
+	 * 3. [base, 8 bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+     * 1. [getdirentries_result, 8 bytes]
+     * 2. [getdirentries_errno, 4 bytes]
+     * 3. [new_base, 8 bytes]
+     * 4. [getdirentries_buf, getdirentries_result bytes]
+     */
+
     //[server_fd, 4][nbytes, 8][base, 8]
 
     if (payload_len != 20) {
@@ -549,7 +682,11 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
 
     uint32_t getdirentries_errno_network = htonl((uint32_t)getdirentries_errno); 
 
-    // getdirentries response: [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
+    /**
+     * getdirentries response: 
+     *  [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
+     *  
+    */ 
     uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + 8 + data_length);
     if (response_buf == NULL) {
         free(basep); 
@@ -578,6 +715,12 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
 }
 
 static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, size_t* total_nodal_bytes) {
+    /**
+     * Counts the total number of nodes and bytes that make up a dirtree starting from a given root node. 
+     * 
+     * These sizes will be included to the response to the client for its getdirentries RPC. 
+     */
+
     if (node == NULL) {
         return; 
     }
@@ -596,6 +739,18 @@ static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, s
 }
 
 static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_t* offset_p) {
+    /**
+     * Encodes the nodes of a tree for gitdirentries into a linear data structure in a buffer. Takes the node to 
+     * write, the nodal_message buffer to write into, and the current offset within that bufffer. 
+     * 
+     * For any node in the tree, writes down its number of children, the length of its name string, and then its name 
+     * string. 
+     * 
+     * The root node is the first to be encoded. After that, we write the children of a node depth-first from left to 
+     * right through its indices. This defined order will be exploited by the mylib.c functions that have to take 
+     * that message and turn it back into a tree. 
+     */
+
     // Returns 0 for done, -1 for errors. 
     if (node == NULL) {
         return 0; 
@@ -623,6 +778,13 @@ static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_
 }
 
 static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint32_t* bytes_to_send, int getdirtree_errno) {
+    /**
+     * Converts a dirtree into a linear message. 
+     * 
+     * The message will need to include information about the size of the dirtree as well as the actual nodes 
+     * themselves, and these can be done with the measure_dirtree_size() and marshal_nodes() functions. 
+     */
+
     // Serialize a tree structure. 
 
     // [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
@@ -674,10 +836,23 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint
 }
 
 static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
+    /**
+     * This function interprets the payload of an getdirtree RPC from the client into local arguments, passes those 
+     * local arguments to the standard library getdirtree() function, and then responds to the client with the 
+     * outputs of the standard library call. 
+     * 
+     * The payload from the client is understood to have the following contiguous order: 
+	 * 1. [path_length, 4 bytes]
+     * 2. [path, path_length bytes]
+     * 
+     * The response back to the client is formatted in this contiguous order: 
+	 * 1. [getdirentries_result, 8 bytes]
+	 * 2. [getdirentries_errno, 4 bytes]
+	 * 3. [new_base, 8 bytes]
+	 * 4. [getdirentries_buf, getdirentries_result bytes]
+     */
+
     //[path_length, 4][path, path_length]
-
-
-
     if (payload_len < 4) {
         fprintf(stderr, "Wrong getdirtree payload size: %u\n", payload_len);
         return -1;
@@ -724,8 +899,23 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
 }
 
 static int handle_one_message(int sessfd) {
-    // [opcode, 4][payload_len, 4]
-    // Return 1 on success, 0 on client closing connection, -1 on error. 
+    /**
+     * This function takes in an entire RPC message from the client by listening out on a connected socket. This 
+     * RPC message will include both a fixed header and the payload. 
+     * 
+     * The fixed header is always formatted contiguously as such: 
+     * 1. [opcode, 4 bytes]
+     * 2. [payload_length, 4 bytes]
+     * 
+     * The fixed header is always 8 bytes and contains the opcode corresponding with the function the client is 
+     * requesting to call as well as the length in bytes of the following payload. So, this function continually 
+     * tries to read 8 byte headers off the socket connection and when it does, then interprets that header to get the 
+     * payload size. It then uses the now known payload size to capture the payload from the socket connection, and 
+     * cases on the opcode in order to call the correct helper function. 
+     * 
+     * Return 1 on success, 0 on the client closing the connection, and -1 on error. 
+     */
+
 
     uint32_t op_network, length_network; 
 
@@ -796,8 +986,15 @@ static int handle_one_message(int sessfd) {
 }
 
 
-// Recall: argc is number or arguments, argv is the array of char* strings. 
 int main(int argc, char** argv) {
+    /**
+     * This main function implements the main loop of the server. We listen on a port to accept connections from 
+     * clients into a socket, and when that occurs we fork off a child process so that we can handle that client in 
+     * parallel with other clients. The child process simply runs handle_one_message. 
+     * 
+     * We also install the handler for the children for when they finish executing. 
+     */
+
     signal(SIGCHLD, sigchld_handler);
 
     (void)argc;
@@ -839,7 +1036,6 @@ int main(int argc, char** argv) {
         err(1, 0);
     }
 
-    // Main server loop, set up to go indefinitely one at a time. 
     while (true) {
 
         // Wait for next client, get session socket. 
@@ -871,8 +1067,6 @@ int main(int argc, char** argv) {
         } else {
             close(sessfd); 
         }
-
-
 
     }
 
