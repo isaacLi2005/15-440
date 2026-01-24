@@ -67,6 +67,8 @@ void sigchld_handler(int sig) {
      * Programmer's Perspective, Bryant et. al. 
      */
 
+    (void)sig; 
+
     int olderrno = errno; 
 
     while (waitpid(-1, 0, WNOHANG) > 0); 
