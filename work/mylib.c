@@ -1,4 +1,17 @@
-// Code for converting a server_fd to a client_fd was taken from Gemini. 
+/**
+ * mylib.c 
+ * 
+ * This file writes the interposition library that interposes over the standard library functions of read, write, lseek, 
+ * stat, unlink, getdirentries, getdirtree, and freedirtree and allows the client to use them instead with the remote 
+ * resources of a server. The interposition library's objective is to allow the client to call upon resources on the 
+ * server as if they were locally on the machine. 
+ * 
+ * This file operates by agreeing with the server about a standardized format for each of the RPCs. 
+ * 
+ * This file also makes sure to distinguish between local and remote file descriptors by implementing a lookup table, 
+ * thereby allowing the client to still access important local file descriptors such as 1: STDOUT, without dealing with 
+ * the server. 
+ */
 
 
 #define _GNU_SOURCE
@@ -301,6 +314,20 @@ static void free_rpc_buf(uint8_t* rpc_buf) {
 }
 
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
+	/**
+	 * Handles a remote procedure call for an open command over the server. 
+	 * 
+	 * The message buffer to the server is contiguously laid out in the following order: 
+	 * 1. Header
+	 * [op_number, 4 bytes]
+	 * [payload_length, 4 bytes]
+	 * 2. Body 
+	 * [flags, 4 bytes]
+	 * [mode, 4 bytes]
+	 * [path_len, 4 bytes]
+	 * [pathname, path_len bytes]
+	 */
+
 	// Include end '\0'
 	uint32_t path_len = (uint32_t)strlen(pathname) + 1; 
 
@@ -351,9 +378,15 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 }
 
 static int rpc_recv_int_and_errno_response(int sockfd) {
-	// Response in form of [int, 4][errno, 4] in network byte order. 
-	// Assumes this is a function like read, write, close where the int 
-	// implies whether the errno is used. 
+	/**
+	 * Receives a response from the server that is understood to represent an integer result and an errno. 
+	 * If the integer result is negative, sets errno to the received errno. 
+	 * 
+	 * The response is understood to be in this contiguous order: 
+	 * 1. [int_result, 4 bytes]
+	 * 2. [errno, 4 bytes]
+	 */
+
 	uint32_t int_network, errno_network; 
 	int rc; 
 
@@ -378,8 +411,13 @@ static int rpc_recv_int_and_errno_response(int sockfd) {
 	}
 }
 
-// This is our replacement for the open function from libc.
 int open(const char *pathname, int flags, ...) {
+	/**
+	 * The function that is interposed over the standard open function. 
+	 * 
+	 * Simply sends and receives an RPC call to the server with the opcode for open and its arguments. 
+	 */
+
 	mode_t m=0;
 	if (flags & O_CREAT) {
 		va_list a;
@@ -410,6 +448,18 @@ int open(const char *pathname, int flags, ...) {
 }
 
 static int rpc_send_close(int sockfd, int fd) {
+	/**
+	 * Sends a RPC for the close function to the server. 
+	 * 
+	 * The message sent to the server has this structure: 
+	 * Header 
+	 * 1. [op_number, 4 bytes]
+	 * 2. [payload_len, 4 bytes] 
+	 * Body
+	 * 3. [fd, 4 bytes]
+	 */
+
+
 	if (is_remote_fd(fd) == false) {
 		return -1; 
 	}
@@ -451,6 +501,10 @@ static int rpc_send_close(int sockfd, int fd) {
 }
 
 int close(int fd) {
+	/**
+	 * Interposes the close function of the standard library using the rpc_send_close function. 
+	 */
+
 	if (is_remote_fd(fd) == false) {
 		return orig_close(fd); 
 	}
@@ -470,7 +524,19 @@ int close(int fd) {
 }
 
 static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size_t n_bytes) {
-	//[server_fd, 4][n_bytes, 8][write_buf, n_bytes]
+	/**
+	 * Sends a RPC for the write function towards the server. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [server_fd, 4 bytes]
+	 * 4. [n_bytes, 8 bytes]
+	 * 5. [write_buf, n_bytes]
+	 */
+
 
 	if (n_bytes > UINT32_MAX) {
 		fprintf(stderr, "Too many bytes in write call \n"); 
@@ -518,12 +584,18 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	return 0;
 }
 
-//TODO: size_t is actually 64 bits. 
-
 static ssize_t rpc_recv_write_response(int sockfd) {
-	// Response in form of [ssize_t, 8][errno, 4] in network byte order. 
-	// Assumes this is a function like read, write, close where the int 
-	// implies whether the errno is used. 
+	/**
+	 * Receives a response to the RPC for write. 
+	 * 
+	 * Understand the server's response in this following contiguous order: 
+	 * 1. [write_size, 8 bytes]
+	 * 2. [errno, 4 bytes]
+	 * 
+	 * Sets errno if write_size < 0 to indicate failure. 
+	 */
+
+
 	int64_t size;
 	uint32_t errno_network; 
 	int rc; 
@@ -549,6 +621,10 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 }
 
 ssize_t write(int fd, const void* buf, size_t n_bytes) {
+	/**
+	 * Interposes the write function from the standard library. 
+	 */
+
 	if (is_remote_fd(fd) == false) {
 		return orig_write(fd, buf, n_bytes); 
 	}
@@ -564,8 +640,17 @@ ssize_t write(int fd, const void* buf, size_t n_bytes) {
 }
 
 static int rpc_send_read(int sockfd, int server_fd, size_t count) {
-	// [server_fd, 4][count, 8]
-	// Note we don't send the buf. That will be copied in the recv function. 
+	/**
+	 * Sends the RPC request for a call to read. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [server_fd, 4 bytes]
+	 * 4. [count, 8 bytes]
+	 */
 
 	if (count > UINT32_MAX) {
 		fprintf(stderr, "Too many bytes in read call \n"); 
@@ -609,7 +694,14 @@ static int rpc_send_read(int sockfd, int server_fd, size_t count) {
 }
 
 static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
-	// [read_result, 8][errno_network, 4][read_buf, count]
+	/**
+	 * Receives a response to the RPC for read. 
+	 * 
+	 * Understand the server's response in this following contiguous order: 
+	 * 1. [read_result, 8 bytes]
+	 * 2. [errno, 4 bytes]
+	 * 3. [read_buf, read_result bytes]
+	 */
 
 	int64_t read_result;
 	uint32_t errno_network; 
@@ -651,6 +743,10 @@ static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
+	/**
+	 * Interposes the read function from the standard library. 
+	 */
+
 	if (is_remote_fd(fd) == false) {
 		return orig_read(fd, buf, count); 
 	}
@@ -665,7 +761,18 @@ ssize_t read(int fd, void *buf, size_t count) {
 }
 
 static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
-	//[server_fd, 4][offset, 8][whence, 4]
+	/**
+	 * Sends the RPC request for a call to lseek. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [server_fd, 4 bytes]
+	 * 4. [offset, 8 bytes]
+	 * 5. [whence, 4 bytes]
+	 */
 
 	// Payload = int + off_t + int
 	uint32_t payload_len = (uint32_t)(4 + 8 + 4); 
@@ -689,7 +796,6 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 	memcpy(buf + buf_offset, &server_fd_network, 4); 
 	buf_offset += 4; 
 
-	//TODO: There is no htonll function so we have to just hope this works. 
 	off_t off = offset;
 	memcpy(buf + buf_offset, &off, 8);
 	buf_offset += 8;
@@ -697,7 +803,6 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 	uint32_t whence_network = htonl((uint32_t)whence);
 	memcpy(buf + buf_offset, &whence_network, 4); 
 	buf_offset += 4; 
-
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -712,7 +817,14 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 }
 
 static off_t rpc_recv_lseek_response(int sockfd) {
-	// [off_t, 8][errno, 4]
+	/**
+	 * Receives a response to the RPC for lseek. 
+	 * 
+	 * Understand the server's response in this following contiguous order: 
+	 * 1. [seeked, 8 bytes]
+	 * 2. [errno, 4 bytes]
+	 */
+
 	off_t seeked; 
 	uint32_t errno_network; 
 
@@ -739,7 +851,10 @@ static off_t rpc_recv_lseek_response(int sockfd) {
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
-	// const char* msg = "lseek\n";
+	/**
+	 * Interposes the lseek function from the standard library. 
+	 */
+
 	if (is_remote_fd(fd) == false) {
 		return orig_lseek(fd, offset, whence); 
 	}
@@ -755,7 +870,18 @@ off_t lseek(int fd, off_t offset, int whence) {
 }
 
 static int rpc_send_stat(int sockfd, const char *restrict path) {
-	//[path_length, 4][path, path_length]
+	/**
+	 * Sends the RPC request for a call to stat. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [path_length, 4 bytes]
+	 * 4. [path, path_length bytes]
+	 */
+
 
 	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
 
@@ -798,7 +924,14 @@ static int rpc_send_stat(int sockfd, const char *restrict path) {
 }
 
 static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
-	// [stat_result, 4][errno, 4][struct stat, sizeof(struct stat)] 
+	/**
+	 * Receives a response to the RPC for stat. 
+	 * 
+	 * Understand the server's response in this following contiguous order: 
+	 * 1. [stat_result, 4 bytes]
+	 * 2. [errno, 4 bytes]
+	 * 3. [struct stat, sizeof(stuct stat) bytes]
+	 */
 
 	uint32_t stat_return_network; 
 	uint32_t errno_network; 
@@ -828,6 +961,10 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 }
 
 int stat(const char *restrict path, struct stat *restrict statbuf) {
+	/**
+	 * Interposes the stat function from the standard library. 
+	 */
+
 	if (rpc_send_stat(sockfd, path) < 0) {
 		return -1; 
 	}
@@ -837,7 +974,17 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 }
 
 static int rpc_send_unlink(int sockfd, const char *restrict path) {
-	//[path_length, 4][path, path_length]
+	/**
+	 * Sends the RPC request for a call to unlink. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [path_length, 4 bytes]
+	 * 4. [path, path_length bytes]
+	 */
 
 	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
 
@@ -880,6 +1027,10 @@ static int rpc_send_unlink(int sockfd, const char *restrict path) {
 }
 
 int unlink(const char *pathname) {
+	/**
+	 * Interposes the unlink function from the standard library. 
+	 */
+
 	if (rpc_send_unlink(sockfd, pathname) < 0) {
 		return -1; 
 	}
@@ -889,7 +1040,18 @@ int unlink(const char *pathname) {
 }
 
 static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
-	//[server_fd, 4][nbytes, 8][base, 8]
+	/**
+	 * Sends the RPC request for a call to getdirentries. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [server_fd, 4 bytes]
+	 * 4. [nbytes, 8 bytes]
+	 * 5. [base, 8 bytes]
+	 */
 
 	if (basep == NULL) {
 		fprintf(stderr, "basep was null in rpc_send_getdirentries\n");
@@ -934,11 +1096,18 @@ static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
 	}
 
 	return 0; 
-
 }
 
 ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
-    // getdirentries response: [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
+	/**
+	 * Receives a response to the RPC for getdirentries. 
+	 * 
+	 * Understand the server's response in this following contiguous order: 
+	 * 1. [getdirentries_result, 8 bytes]
+	 * 2. [getdirentries_errno, 4 bytes]
+	 * 3. [new_base, 8 bytes]
+	 * 4. [getdirentries_buf, getdirentries_result bytes]
+	 */
 
 	ssize_t getdirentries_result; 
 	uint32_t getdirentries_errno_network; 
@@ -973,8 +1142,11 @@ ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
 	return getdirentries_result; 
 }
 
-
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
+	/**
+	 * Interposes the getdirentries function from the standard library. 
+	 */
+
     if (is_remote_fd(fd) == false) {
 		return orig_getdirentries(fd, buf, nbytes, basep);
 	}
@@ -991,7 +1163,17 @@ ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
 }
 
 static int rpc_send_getdirtree(int sockfd, const char* path) {
-	//[path_length, 4][path, path_length]
+	/**
+	 * Sends the RPC request for a call to getdirtree. 
+	 * 
+	 * The arguments towards the server have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Body 
+	 * 3. [path_length, 4 bytes]
+	 * 4. [path, path_length bytes]
+	 */
 
 	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
 
@@ -1034,6 +1216,12 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 }
 
 static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdirs) {
+	/**
+	 * Allocates a dirtreenode with a given name and number of subdirectories. 
+	 * 
+	 * Will be used later when we have to read a response for getdirentries and create a tree from it. 
+	 */
+
 	if (num_subdirs < 0) {
 		return NULL;
 	}
@@ -1070,7 +1258,14 @@ static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdir
 	return node; 
 }
 
-// TODO: I got help defining a stack with ChatGPT. 
+/**
+ * The following code defines a stack data structure. It will be used in the algorithm that interprets and builds 
+ * a tree from the server's response to a getdirtree RPC. 
+ * 
+ * The stack is implemented with a dynamically resizing array. 
+ * 
+ * The code was debugged with Gemini. 
+ */
 typedef struct node_stack_entry {
 	struct dirtreenode* node; 
 	uint32_t unassigned_children; 
@@ -1101,6 +1296,12 @@ static node_stack* create_node_stack(void) {
 }
 
 static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
+	/**
+	 * Pushes a new element to the top of the stack. Resizes the stack if necessary. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
+	 */
+
     if (stack->size == stack->capacity) {
         size_t new_capacity = stack->capacity * 2;
         node_stack_entry* new_data =
@@ -1122,6 +1323,10 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
 }
 
 static node_stack_entry* node_stack_top(node_stack* stack) {
+	/**
+	 * Returns the address of the top element of a stack. 
+	 */
+
     if (!stack || stack->size == 0) {
 		return NULL;
 	}
@@ -1129,6 +1334,10 @@ static node_stack_entry* node_stack_top(node_stack* stack) {
 }
 
 void destroy_node_stack(node_stack* stack) {
+	/**
+	 * Frees data associated with one element of the stack. 
+	 */
+
 	if (stack == NULL) {
 		return; 
 	}
@@ -1137,7 +1346,44 @@ void destroy_node_stack(node_stack* stack) {
 }
 
 static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
-	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
+	/**
+	 * Receives the RPC response for a call to getdirtree. 
+	 * 
+	 * The arguments from the server are understood to have this contiguous order: 
+	 * Header 
+	 * 1. [op_code, 4 bytes]
+	 * 2. [payload_size, 4 bytes]
+	 * Fixed Size Body 
+	 * 3. [node_count, 8 bytes]
+	 * 4. [node_bytes, 8 bytes]
+	 * 5. [getdirtree_errno, 4 bytes]
+	 * Repeating Node Body
+	 * 6. [num_subdirs, 4 bytes]
+	 * 7. [name_len, 4 bytes]
+	 * 8. [name, name_len bytes]
+	 * 
+	 * The algorithm to take the server's response and create a tree of variable size is much more involved than 
+	 * other functions present in this file. 
+	 * 
+	 * The server is understood to have sent the response to getdirtree with the usual header, a fixed size body 
+	 * describing the number of bytes and also the errno if applicable, then a sequence that encodes all of the nodes 
+	 * and their order within the tree. 
+	 * 
+	 * The ordering of those children is recursive in a sense, as the nodes after will have their own children. If 
+	 * there  are still parents with children to assign, then the server's response guarantees that the next node is a 
+	 * child of the most recent parent with children left to assign. So, we unwind the server's response by keeping a 
+	 * stack that encodes parents with children left to assign and how many children they are waiting for, with the top 
+	 * of the stack being the most recent parent, and each new node being assigned as a child to the parent at the top 
+	 * of the stack if it is nonempty. If that child is waiting on children of its own, it is also added to the stack 
+	 * with its number of requested children.  If the stack is empty and a node appears with a nonzero amoutn of 
+	 * children, it is simply added to the stack along with the number of children it is still waiting for. 
+	 * 
+	 * The first node we encounter is set as the root, and we later return it when all the nodes beneath this root 
+	 * are finished. 
+	 * 
+	 * 
+	 * This function was debugged with Gemini. 
+	 */
 
 	uint64_t node_count = 0; 
 	uint64_t node_bytes = 0; 
@@ -1177,7 +1423,6 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	}
 
 	struct dirtreenode* root = NULL; 
-
 
 	for (uint64_t i = 0; i < node_count; i++) {
 		uint32_t num_subdirs = 0; 
@@ -1219,6 +1464,10 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 }
 
 struct dirtreenode* getdirtree(const char *path) {
+	/**
+	 * This function interposes the getdirtree function from the standard library. 
+	 */
+
 	if (rpc_send_getdirtree(sockfd, path) < 0) {
 		return NULL; 
 	} 
@@ -1228,11 +1477,22 @@ struct dirtreenode* getdirtree(const char *path) {
 }
 
 void freedirtree(struct dirtreenode *dt) {
+	/**
+	 * This function interposes the freedirtree function from the standard library. 
+	 * 
+	 * Humorously, it is simply a pass-through function to the original freedirtree function. This works since the 
+	 * server is understood to have freed the directory tree on its end after sending it to the client, so there is 
+	 * no need for a RPC. 
+	 */
+
     orig_freedirtree(dt);
 }
 
-// This function is automatically called when program is started
 void _init(void) {
+	/**
+	 * This function automatically is called when the program is started. It interposes all of the required standard 
+	 * library functions and sets up a socket connection to the server. 
+	 */
 
 	// set function pointer orig_open to point to the original open function
 	orig_open = dlsym(RTLD_NEXT, "open");
@@ -1259,12 +1519,17 @@ void _init(void) {
 	char* serverIP = getenv("server15440");
 	srv.sin_addr.s_addr = inet_addr(serverIP); // server IP
 	unsigned short serverPort = atoi(getenv("serverport15440"));
-	srv.sin_port = htons(serverPort); // port 15440 TODO: avoid hardcode. 
+	srv.sin_port = htons(serverPort); 
 	rv = connect(sockfd, (struct sockaddr *) &srv,
 	sizeof(struct sockaddr)); // connect to server
 
 }
 
 void _fini(void) {
+	/**
+	 * This function automatically runs when the client program is done with the library, such as at the end of the 
+	 * client's program. We clean up by freeing the socket connection to the server. 
+	 */
+
 	orig_close(sockfd);  
 }
