@@ -30,10 +30,32 @@
 
 #include "../include/dirtree.h"
 
+#include <signal.h>
+#include <sys/wait.h>
 
+
+/**
+ * A constant used to help distinguish file descriptors relevant to the client's local machine and file descriptors 
+ * that come from the remote server. 
+ * 
+ * This offset is added to file descriptors from the remote server to easily differentiate them from local file 
+ * descriptors. Later on, we simply check if a file descriptor is less than this offset to conclude that it must 
+ * be a local rather than a remote file descriptor. 
+ * 
+ * A possible corner case is if the client's machine actually ends up opening this offset number of file descriptors, 
+ * which would break our logic that is supposed to distinguish local and remote file descriptors. However, I reason 
+ * that it is unlikely the client actually opens 100,000 files locally, and if they do they are already doing something
+ * very wrong, upon which case the consequences of their actions are not my responsibiltiy. 
+ */
 #define REMOTE_FD_OFFSET 100000
 
-
+/**
+ * We will create a lookup table that holds the actual remote file desciptors that the server uses, without the 
+ * offset, and index into this table to find that file descriptor value. This struct will later be used in that 
+ * lookup table, and at a particular index will indicate whether that file is open (in_use) and what the original 
+ * file descriptor from the server was. 
+ * remote_entries acts as this table. remote_entry_capacity is the size of it; the number of structs it can hold. 
+ */
 struct remote_fd_entry {
 	bool in_use; 
 	int server_fd; 
@@ -42,6 +64,12 @@ static struct remote_fd_entry* remote_entries = NULL;
 static size_t remote_entry_capacity = 0; 
 
 static int ensure_remote_size(size_t num_needed) {
+	/**
+	 * Ensures that the remote_entries table will have at least num_needed total capacity by resizing it. 
+	 * 	 
+	 * Returns 0 on success and -1 on failure. 
+	 */
+
 	if (remote_entry_capacity >= num_needed) {
 		return 0; 
 	}
@@ -78,6 +106,21 @@ static int ensure_remote_size(size_t num_needed) {
 }
 
 static int record_remote_fd(int server_fd) {
+	/**
+	 * We take in a file descriptor from the server and record it into our table. 
+	 * 
+	 * We linearly scan through the remote_entries table and use the first available slot, recording that index i. 
+	 * After we find that index i, we write down what the server's file descriptor was there and mark it used. Then, 
+	 * REMOTE_FD_OFFSET + i becomes the "remote file descriptor" that will be given to the client. This has the 
+	 * benefit of giving us the ability to easily index back into i when we see that file descriptor; we know any used
+	 * file descriptor that looks like REMOTE_FD_OFFSET + i will have its actual server file descriptor at index i 
+	 * in our table. 
+	 * If no free slots are found, we resize and try again. 
+	 * 
+	 * This function was debugged using Gemini. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
+	 */
 	if (remote_entry_capacity == 0) {
 		if (ensure_remote_size(1) < 0) {
 			return -1; 
@@ -112,6 +155,12 @@ static int record_remote_fd(int server_fd) {
 }
 
 static bool is_remote_fd(int fd) {
+	/**
+	 * Our code distinguishes remote file descriptors from local ones by making sure that remote ones are at least 
+	 * REMOTE_FD_OFFSET. So, we can easily tell when a file descriptor came from the remote server by if it has a 
+	 * value of at least REMOTE_FD_OFFSET. 
+	 */
+
 	if (fd < REMOTE_FD_OFFSET) {
 		return false; 
 	} 
@@ -124,6 +173,10 @@ static bool is_remote_fd(int fd) {
 }
 
 static void free_remote_fd(int client_fd) {
+	/**
+	 * Frees a remote file descriptor by marking it unused in the table and clearing the old value out. 
+	 */
+
 	if (is_remote_fd(client_fd) == false) {
 		return; 
 	}
@@ -133,6 +186,13 @@ static void free_remote_fd(int client_fd) {
 }
 
 static int client_fd_to_server_fd(int client_fd) {
+	/**
+	 * Converts a remote file descriptor given to the client to the file descriptor that is meaningful to the server 
+	 * by indexing into remote_entries. 
+	 * 
+	 * If we can tell that the input file descriptor is not actually a remote file descriptor, we return -1 to indicate 
+	 * an error. 
+	 */
 	if (is_remote_fd(client_fd) == false) {
 		return -1; 
 	}
@@ -144,7 +204,7 @@ static int client_fd_to_server_fd(int client_fd) {
 int sockfd; 
 int rv;
 
-// The following line declares a function pointer with the same prototype as the open function.  
+// The following lines declare function pointers with the same signature as those we are interposing. 
 int (*orig_open)(const char *pathname, int flags, ...);  // mode_t mode is needed when flags includes O_CREAT
 int (*orig_close)(int fd);
 ssize_t (*orig_write)(int filedes, const void* buf, size_t nbyte);
@@ -157,7 +217,10 @@ void (*orig_freedirtree)(struct dirtreenode *dt);
 ssize_t (*orig_getdirentries)(int fd, char *buf, size_t nbytes, off_t *basep);
 
 
-// Op codes 
+/**
+ * The integer opcodes we define here are understood to be the same across the server and the client. 
+ * These allow the server and the client to agree on the meaning of bytes in packages sent across the network. 
+ */
 enum {
 	OP_OPEN = 1, 
 	OP_WRITE = 2, 
@@ -171,6 +234,13 @@ enum {
 };
 
 static int send_all(int fd, const void *buf, size_t n) {
+	/**
+     * This function makes sure that the entirety of n requested bytes are sent to a particular file (usually a socket). 
+     * This is used to prevent short writes. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     */
+
     const uint8_t *p = (const uint8_t *)buf;
     size_t sent = 0;
     while (sent < n) {
@@ -184,6 +254,14 @@ static int send_all(int fd, const void *buf, size_t n) {
 }
 
 static int recv_all(int fd, void* buf, size_t n) {
+	/**
+     * This function makes sure that the entirety of n requested bytes is read from a particular file 
+     * (usually a socket). 
+     * This is used to prevent short reads. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     */
+
     uint8_t* p = (uint8_t*)buf; 
     size_t got = 0; 
 
@@ -200,6 +278,11 @@ static int recv_all(int fd, void* buf, size_t n) {
 }
 
 static uint8_t* create_rpc_buf(uint32_t total_size) {
+	/**
+	 * A helper function that creates a buffer that will be used for RPC calls in later functions. 
+	 * 
+	 * Returns NULL if malloc() fails. 
+	 */
 	
 	uint8_t* buf = (uint8_t*)malloc(total_size); 
 	if (buf == NULL) {
@@ -211,6 +294,9 @@ static uint8_t* create_rpc_buf(uint32_t total_size) {
 }
 
 static void free_rpc_buf(uint8_t* rpc_buf) {
+	/**
+	 * Frees a buffer that was used to send a RPC. 
+	 */
 	free(rpc_buf);
 }
 
@@ -1035,19 +1121,6 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
     return 0;
 }
 
-static int node_stack_pop(node_stack* stack, node_stack_entry* out) {
-	if (stack->size == 0) {
-		return -1; 
-	}
-
-	stack->size -= 1; 
-
-	// This should copy data into the out. 
-	*out = stack->data[stack->size]; 
-
-	return 0; 
-}
-
 static node_stack_entry* node_stack_top(node_stack* stack) {
     if (!stack || stack->size == 0) {
 		return NULL;
@@ -1063,7 +1136,6 @@ void destroy_node_stack(node_stack* stack) {
 	free(stack); 
 }
 
-// TODO: Change to use a sockfd and be the recv function. 
 static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	// [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
 
@@ -1137,7 +1209,7 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 
 
 		while (stack->size > 0 && stack->data[stack->size-1].unassigned_children == 0) {
-			stack->size -= 1; //Not a pop as we don't care about the elem. 
+			stack->size -= 1; 
 		}
 	}
 

@@ -22,9 +22,16 @@
 
 #include <assert.h>
 
+#include <signal.h>  
+#include <sys/wait.h> 
 
 #define MAXMSGLEN 100 
 
+
+/**
+ * The integer opcodes we define here are understood to be the same across the server and the client. 
+ * These allow the server and the client to agree on the meaning of bytes in packages sent across the network. 
+ */
 enum {
 	OP_OPEN = 1, 
 	OP_WRITE = 2, 
@@ -37,7 +44,30 @@ enum {
 	OP_GETDIRTREE = 9 
 };
 
+void sigchld_handler(int sig) {
+    /**
+     * This function was heavily inspired by a similiar function from the 15-213 textbook, Computer Systems - A 
+     * Programmer's Perspective, Bryant et. al. 
+     */
+
+    int olderrno = errno; 
+
+    while (waitpid(-1, 0, WNOHANG) > 0); 
+
+    errno = olderrno; 
+
+    return;
+}
+
 static int recv_all(int fd, void* buf, size_t n) {
+    /**
+     * This function makes sure that the entirety of n requested bytes is read from a particular file 
+     * (usually a socket). 
+     * This is used to prevent short reads. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     */
+
     uint8_t* p = (uint8_t*)buf; 
     size_t got = 0; 
 
@@ -54,6 +84,13 @@ static int recv_all(int fd, void* buf, size_t n) {
 }
 
 static int send_all(int fd, const void *buf, size_t n) {
+    /**
+     * This function makes sure that the entirety of n requested bytes are sent to a particular file (usually a socket). 
+     * This is used to prevent short writes. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     */
+
     const uint8_t *p = (const uint8_t *)buf;
     size_t sent = 0;
     while (sent < n) {
@@ -761,7 +798,7 @@ static int handle_one_message(int sessfd) {
 
 // Recall: argc is number or arguments, argv is the array of char* strings. 
 int main(int argc, char** argv) {
-    fflush(stderr);
+    signal(SIGCHLD, sigchld_handler);
 
     (void)argc;
     (void)argv;
@@ -812,23 +849,30 @@ int main(int argc, char** argv) {
             err(1, 0); 
         }
 
-        // Get messages and echo them until done. 
+        pid_t pid = fork(); 
 
-        while (true) {
-            int rc = handle_one_message(sessfd); 
-            if (rc == 1) {
-                // rc == 1 means got a message. 
-                continue; 
-            } else if (rc == 0) {
-                // rc == 0 intends to mean client breaks connection. 
-                break; 
-            } else {
-                // rc < 0 means an error. 
-                err(1, 0); 
+        if (pid == 0) {
+            close(sockfd); 
+            while (true) {
+                int rc = handle_one_message(sessfd); 
+                if (rc == 1) {
+                    // rc == 1 means got a message. 
+                    continue; 
+                } else if (rc == 0) {
+                    // rc == 0 intends to mean client breaks connection. 
+                    break; 
+                } else {
+                    // rc < 0 means an error. 
+                    err(1, 0); 
+                }
             }
+            close(sessfd); 
+            exit(0); 
+        } else {
+            close(sessfd); 
         }
 
-        close(sessfd);
+
 
     }
 
