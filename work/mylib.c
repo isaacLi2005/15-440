@@ -294,13 +294,13 @@ static uint8_t* create_rpc_buf(uint32_t total_size) {
 	/**
 	 * A helper function that creates a buffer that will be used for RPC calls in later functions. 
 	 * 
-	 * Returns NULL if malloc() fails. 
+	 * Crashes the process if malloc() failed. 
 	 */
 	
 	uint8_t* buf = (uint8_t*)malloc(total_size); 
 	if (buf == NULL) {
 		fprintf(stderr, "Malloc fails in create_rpc_buf \n");
-		return NULL; 
+		exit(1); 
 	}
 
 	return buf; 	
@@ -313,8 +313,8 @@ static void free_rpc_buf(uint8_t* rpc_buf) {
 	free(rpc_buf);
 }
 
-static void copy_over(uint8_t* dest_buf, void* source, size_t num_bytes, 
-					  bool convert_to_network_endianness, off_t* dest_offset) {
+static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes, 
+					  bool convert_to_network_endianness, size_t* dest_offset) {
 	/**
 	 * A helper function that handles copying data from a source into a destination at a particular offset. 
 	 * 
@@ -374,29 +374,20 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_OPEN);
-	memcpy(buf + buf_offset, &op_number_network, 4);
-	buf_offset += 4;
+	uint32_t op_number = (uint32_t)OP_OPEN; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_length_network = htonl(payload_len);
-	memcpy(buf + buf_offset, &payload_length_network, 4); 
-	buf_offset += 4;
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t flags_network = htonl((uint32_t)flags); 
-	memcpy(buf + buf_offset, &flags_network, 4);
-	buf_offset += 4;
 
-	uint32_t mode_network = htonl((uint32_t)mode); 
-	memcpy(buf + buf_offset, &mode_network, 4);
-	buf_offset += 4;
+	copy_over(buf, &flags, 4, true, &buf_offset); 
 
-	uint32_t path_len_network = htonl(path_len);
-	memcpy(buf + buf_offset, &path_len_network, 4);
-	buf_offset += 4; 
+	copy_over(buf, &mode, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, pathname, path_len); 
-	buf_offset += path_len; 
+	copy_over(buf, &path_len, 4, true, &buf_offset); 
+
+	copy_over(buf, pathname, path_len, false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -408,7 +399,6 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 	}
 
 	return 0;
-
 }
 
 static int rpc_recv_int_and_errno_response(int sockfd) {
@@ -508,18 +498,14 @@ static int rpc_send_close(int sockfd, int fd) {
 	size_t buf_offset = 0; 
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_CLOSE);
-	memcpy(buf + buf_offset, &op_number_network, 4);
-	buf_offset += 4;
+	uint32_t op_number = (uint32_t)OP_CLOSE; 
+	copy_over(buf, &op_number, 4, true, &buf_offset);
 
-	uint32_t payload_length_network = htonl(payload_len);
-	memcpy(buf + buf_offset, &payload_length_network, 4); 
-	buf_offset += 4;
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
-	// Payload start 
-	uint32_t fd_network = htonl((uint32_t)(int32_t)server_fd); 
-	memcpy(buf + buf_offset, &fd_network, 4); 
-	buf_offset += 4; 
+	// Payload start
+	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd;  
+	copy_over(buf, &casted_server_fd, 4, true, &buf_offset);
 
 
 	// Send the buffer. 
@@ -586,24 +572,19 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_WRITE); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_WRITE; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset);
 
 	// Payload start
-	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
-	memcpy(buf + buf_offset, &server_fd_network, 4); 
-	buf_offset += 4; 
 
-	memcpy(buf + buf_offset, &n_bytes, 8); 
-	buf_offset += 8; 
+	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
+	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, write_buf, n_bytes); 
-	buf_offset += n_bytes; 
+	copy_over(buf, &n_bytes, 8, false, &buf_offset); 
+
+	copy_over(buf, write_buf, n_bytes, false, &buf_offset); 
 
 
 	// Send the buffer. 
@@ -699,21 +680,16 @@ static int rpc_send_read(int sockfd, int server_fd, size_t count) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_READ); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_READ; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
-	memcpy(buf + buf_offset, &server_fd_network, 4); 
-	buf_offset += 4; 
+	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
+	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, &count, 8); 
-	buf_offset += 8; 
+	copy_over(buf, &count, 8, false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -817,26 +793,18 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_LSEEK); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_LSEEK;
+	copy_over(buf, &op_number, 4, true, &buf_offset);  
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset);
 
 	// Payload start
-	uint32_t server_fd_network = htonl((uint32_t)(int32_t)(server_fd)); 
-	memcpy(buf + buf_offset, &server_fd_network, 4); 
-	buf_offset += 4; 
+	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
+	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
 
-	off_t off = offset;
-	memcpy(buf + buf_offset, &off, 8);
-	buf_offset += 8;
+	copy_over(buf, &offset, 8, false, &buf_offset); 
 
-	uint32_t whence_network = htonl((uint32_t)whence);
-	memcpy(buf + buf_offset, &whence_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &whence, 4, true, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -928,22 +896,15 @@ static int rpc_send_stat(int sockfd, const char *restrict path) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_STAT); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_STAT; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t path_length_network = htonl(path_length); 
-	memcpy(buf + buf_offset, &path_length_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &path_length, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, path, path_length); 
-	buf_offset += path_length; 
-
+	copy_over(buf, path, path_length, false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -1031,21 +992,15 @@ static int rpc_send_unlink(int sockfd, const char *restrict path) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_UNLINK); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_UNLINK; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t path_length_network = htonl(path_length); 
-	memcpy(buf + buf_offset, &path_length_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &path_length, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, path, path_length); 
-	buf_offset += path_length; 
+	copy_over(buf, path, path_length, false, &buf_offset); 
 
 
 	// Send the buffer. 
@@ -1101,24 +1056,17 @@ static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_GETDIRENTRIES); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_GETDIRENTRIES; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(int32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t server_fd_network = htonl((uint32_t)server_fd); 
-	memcpy(buf + buf_offset, &server_fd_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &server_fd, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, &nbytes, 8); 
-	buf_offset += 8; 
+	copy_over(buf, &nbytes, 8, false, &buf_offset); 
 
-	memcpy(buf + buf_offset, &base, 8); 
-	buf_offset += 8; 
+	copy_over(buf, &base, 8, false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -1220,22 +1168,15 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 	size_t buf_offset = 0;
 
 	// Header start
-	uint32_t op_number_network = htonl((uint32_t)OP_GETDIRTREE); 
-	memcpy(buf + buf_offset, &op_number_network, 4); 
-	buf_offset += 4; 
+	uint32_t op_number = (uint32_t)OP_GETDIRTREE; 
+	copy_over(buf, &op_number, 4, true, &buf_offset); 
 
-	uint32_t payload_len_network = htonl((uint32_t)(payload_len));
-	memcpy(buf+buf_offset, &payload_len_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &payload_len, 4, true, &buf_offset); 
 
 	// Payload start
-	uint32_t path_length_network = htonl(path_length); 
-	memcpy(buf + buf_offset, &path_length_network, 4); 
-	buf_offset += 4; 
+	copy_over(buf, &path_length, 4, true, &buf_offset); 
 
-	memcpy(buf + buf_offset, path, path_length); 
-	buf_offset += path_length; 
-
+	copy_over(buf, path, path_length, false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -1314,13 +1255,13 @@ typedef struct {
 static node_stack* create_node_stack(void) {
 	node_stack* stack = (node_stack*)malloc(sizeof(node_stack)); 
 	if (stack == NULL) {
-		return NULL; 
+		exit(1); 
 	}
 
 	stack->data = (node_stack_entry*)malloc(4 * sizeof(node_stack_entry)); 
 	if (stack->data == NULL) {
 		free(stack); 
-		return NULL; 
+		exit(1); 
 	}
 
 	stack->size = 0; 
@@ -1333,7 +1274,7 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
 	/**
 	 * Pushes a new element to the top of the stack. Resizes the stack if necessary. 
 	 * 
-	 * Returns 0 on success and -1 on failure. 
+	 * Returns 0 on success and exits on failure. 
 	 */
 
     if (stack->size == stack->capacity) {
@@ -1341,7 +1282,7 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
         node_stack_entry* new_data =
             (node_stack_entry*)malloc(new_capacity * sizeof(*new_data));
         if (new_data == NULL) {
-			return -1;
+			exit(1);
 		}
 
         memcpy(new_data, stack->data, stack->size * sizeof(*new_data)); 
