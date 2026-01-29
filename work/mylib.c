@@ -63,6 +63,18 @@
 #define REMOTE_FD_OFFSET 100000
 
 /**
+ * The number of bytes in the NUL terminator, '\0'. 
+ */
+#define NUL_TERMINATOR_BYTES 1
+
+/**
+ * The number of bytes in my header. 
+ * 
+ * It is made up of a 4 byte integer opcode and a 4 byte payload length. 4 + 4 = 8. 
+ */
+#define HEADER_BYTES 8
+
+/**
  * We will create a lookup table that holds the actual remote file desciptors that the server uses, without the 
  * offset, and index into this table to find that file descriptor value. This struct will later be used in that 
  * lookup table, and at a particular index will indicate whether that file is open (in_use) and what the original 
@@ -101,8 +113,7 @@ static int ensure_remote_size(size_t num_needed) {
 		cap *= 2; 
 	}
 
-	struct remote_fd_entry* new_remote_entries =
-		(struct remote_fd_entry*)malloc(cap * sizeof(struct remote_fd_entry)); 
+	struct remote_fd_entry* new_remote_entries = (struct remote_fd_entry*)malloc(cap * sizeof(struct remote_fd_entry)); 
 	if (new_remote_entries == NULL) {
 		return -1; 
 	}
@@ -364,8 +375,6 @@ static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes,
 	 * 
 	 * Has the effect of copying bytes over from source to dest_buf. 
 	 */
-	
-
 
 	assert(dest_buf != NULL); 
 	assert(source != NULL); 
@@ -384,7 +393,7 @@ static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes,
 
 	*dest_offset += num_bytes;
 
-	}
+}
 
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
 	/**
@@ -410,11 +419,11 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 	 */
 
 	// Include end '\0'
-	uint32_t path_len = (uint32_t)strlen(pathname) + 1; 
+	uint32_t path_len = (uint32_t)strlen(pathname) + NUL_TERMINATOR_BYTES; 
 
 	// Payload = flags + mode + path_len + pathname 
-	uint32_t payload_len = (uint32_t)(4 + 4 + 4 + path_len); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + sizeof(mode_t) + sizeof(uint32_t) + path_len); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -422,17 +431,17 @@ static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mod
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_OPEN; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
 
-	copy_over(buf, &flags, 4, true, &buf_offset); 
+	copy_over(buf, &flags, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &mode, 4, true, &buf_offset); 
+	copy_over(buf, &mode, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &path_len, 4, true, &buf_offset); 
+	copy_over(buf, &path_len, sizeof(uint32_t), true, &buf_offset); 
 
 	copy_over(buf, pathname, path_len, false, &buf_offset); 
 
@@ -466,12 +475,12 @@ static int rpc_recv_int_and_errno_response(int sockfd) {
 	uint32_t int_network, errno_network; 
 	int rc; 
 
-	rc = recv_all(sockfd, &int_network, 4); 
+	rc = recv_all(sockfd, &int_network, sizeof(int)); 
 	if (rc <= 0) {
 		return -1; 
 	}
 
-	rc = recv_all(sockfd, &errno_network, 4); 
+	rc = recv_all(sockfd, &errno_network, sizeof(int)); 
 	if (rc <= 0) {
 		return -1; 
 	}
@@ -552,8 +561,8 @@ static int rpc_send_close(int sockfd, int fd) {
 
 	int server_fd = client_fd_to_server_fd(fd); 
 
-	uint32_t payload_len = (uint32_t)(4);
-	uint32_t total_len = (uint32_t)(8) + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int));
+	uint32_t total_len = (uint32_t)(HEADER_BYTES) + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -561,13 +570,13 @@ static int rpc_send_close(int sockfd, int fd) {
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_CLOSE; 
-	copy_over(buf, &op_number, 4, true, &buf_offset);
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset);
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(int), true, &buf_offset); 
 
 	// Payload start
 	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd;  
-	copy_over(buf, &casted_server_fd, 4, true, &buf_offset);
+	copy_over(buf, &casted_server_fd, sizeof(uint32_t), true, &buf_offset);
 
 
 	// Send the buffer. 
@@ -639,8 +648,8 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 	}
 
 	// Payload = fd + payload
-	uint32_t payload_len = (uint32_t)(4 + 8 + n_bytes); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + sizeof(size_t) + n_bytes); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -648,16 +657,16 @@ static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_WRITE; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset);
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset);
 
 	// Payload start
 
 	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
-	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
+	copy_over(buf, &casted_server_fd, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &n_bytes, 8, false, &buf_offset); 
+	copy_over(buf, &n_bytes, sizeof(size_t), false, &buf_offset); 
 
 	copy_over(buf, write_buf, n_bytes, false, &buf_offset); 
 
@@ -690,17 +699,16 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 	 * Sets errno if write_size < 0 to indicate failure. 
 	 */
 
-
 	int64_t size;
 	uint32_t errno_network; 
 	int rc; 
 
-	rc = recv_all(sockfd, &size, 8); 
+	rc = recv_all(sockfd, &size, sizeof(ssize_t)); 
 	if (rc <= 0) {
 		return -1; 
 	}
 
-	rc = recv_all(sockfd, &errno_network, 4); 
+	rc = recv_all(sockfd, &errno_network, sizeof(int)); 
 	if (rc <= 0) {
 		return -1; 
 	}
@@ -767,23 +775,23 @@ static int rpc_send_read(int sockfd, int server_fd, size_t count) {
 	}
 
 	// Payload = fd + payload
-	uint32_t payload_len = (uint32_t)(4 + 8); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + sizeof(size_t)); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
  
 	uint8_t* buf = create_rpc_buf(total_len); 
 	size_t buf_offset = 0;
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_READ; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
 	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
-	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
+	copy_over(buf, &casted_server_fd, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &count, 8, false, &buf_offset); 
+	copy_over(buf, &count, sizeof(size_t), false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -818,12 +826,12 @@ static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
 
 	int rc; 
 
-	rc = recv_all(sockfd, &read_result, 8); 
+	rc = recv_all(sockfd, &read_result, sizeof(int64_t)); 
 	if (rc <= 0) {
 		return -1; 
 	}
 
-	rc = recv_all(sockfd, &errno_network, 4); 
+	rc = recv_all(sockfd, &errno_network, sizeof(uint32_t)); 
 	if (rc <= 0) {
 		return -1; 
 	}
@@ -900,8 +908,8 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 	 */
 
 	// Payload = int + off_t + int
-	uint32_t payload_len = (uint32_t)(4 + 8 + 4); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + sizeof(off_t) + sizeof(int)); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -909,17 +917,17 @@ static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_LSEEK;
-	copy_over(buf, &op_number, 4, true, &buf_offset);  
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset);  
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset);
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset);
 
 	// Payload start
 	uint32_t casted_server_fd = (uint32_t)(int32_t)server_fd; 
-	copy_over(buf, &casted_server_fd, 4, true, &buf_offset); 
+	copy_over(buf, &casted_server_fd, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &offset, 8, false, &buf_offset); 
+	copy_over(buf, &offset, sizeof(off_t), false, &buf_offset); 
 
-	copy_over(buf, &whence, 4, true, &buf_offset); 
+	copy_over(buf, &whence, sizeof(int), true, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -952,12 +960,12 @@ static off_t rpc_recv_lseek_response(int sockfd) {
 
 	int rc; 
 
-	rc = recv_all(sockfd, &seeked, 8); 
+	rc = recv_all(sockfd, &seeked, sizeof(ssize_t)); 
 	if (rc <= 0) {
 		return -1; 
 	}
 
-	rc = recv_all(sockfd, &errno_network, 4); 
+	rc = recv_all(sockfd, &errno_network, sizeof(int)); 
 	if (rc <= 0) {
 		return -1; 
 	}
@@ -1696,9 +1704,6 @@ void _init(void) {
 	orig_getdirtree  = dlsym(RTLD_NEXT, "getdirtree");
 	orig_freedirtree = dlsym(RTLD_NEXT, "freedirtree");
 	orig_getdirentries = dlsym(RTLD_NEXT, "getdirentries");
-
-
-
 
 
 	// Create a socket fd
