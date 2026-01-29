@@ -37,6 +37,12 @@
 #include <sys/wait.h> 
 
 /**
+ * The number of bytes in the NUL terminator, '\0'. 
+ */
+#define NUL_TERMINATOR_BYTES 1
+
+
+/**
  * The integer opcodes we define here are understood to be the same across the server and the client. 
  * These allow the server and the client to agree on the meaning of bytes in packages sent across the network. 
  */
@@ -444,24 +450,15 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
         return -1;
     }
 
-    uint32_t fd_network; 
-    memcpy(&fd_network, payload, sizeof(uint32_t)); 
-    int server_fd = (int)(ntohl(fd_network)); 
 
-    int64_t off_beamed; 
-    memcpy(&off_beamed, payload + sizeof(uint32_t), sizeof(int64_t)); 
-    off_t offset = (off_t)(off_beamed); 
+    int server_fd; 
+    off_t offset; 
+    int32_t whence; 
+    size_t copy_out_offset = 0; 
+    copy_out(&server_fd, payload, sizeof(uint32_t), true, &copy_out_offset);
+    copy_out(&offset, payload, sizeof(int64_t), false, &copy_out_offset); 
+    copy_out(&whence, payload, sizeof(int32_t), true, &copy_out_offset); 
 
-    uint32_t whence_network; 
-    memcpy(&whence_network, payload + sizeof(uint32_t) + sizeof(int64_t), sizeof(uint32_t)); 
-    int32_t whence = (int32_t)(ntohl(whence_network)); 
-
-    fprintf(stderr, "SERVER lseek recv: server_fd=%d offset=%lld (0x%llx) whence=%d\n",
-        server_fd,
-        (long long)offset,
-        (unsigned long long)offset,
-        whence);
-    fflush(stderr);
 
     off_t lseek_result = lseek(server_fd, offset, whence); 
     int32_t lseek_errno; 
@@ -471,13 +468,13 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
         lseek_errno = 0; 
     }
 
-    uint32_t errno_network = htonl((uint32_t)lseek_errno);
 
     // lseek response: [offset, 8][errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(sizeof(int64_t) + sizeof(int));
-    int64_t result_beamed = (int64_t)lseek_result; 
-    memcpy(response_buf, &result_beamed, sizeof(int64_t));
-    memcpy(response_buf + sizeof(int64_t), &errno_network, sizeof(int)); 
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &lseek_result, sizeof(int64_t), false, &copy_in_offset); 
+    copy_in(response_buf, &lseek_errno, sizeof(uint32_t), true, &copy_in_offset); 
 
     if (send_all(sessfd, response_buf, sizeof(int64_t) + sizeof(int)) < 0) {
         free(response_buf);
@@ -517,21 +514,23 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1;
     }
 
-    uint32_t fd_network; 
-    memcpy(&fd_network, payload, sizeof(uint32_t)); 
-    int server_fd = (int)(ntohl(fd_network)); 
-
-    uint64_t count_received; 
-    memcpy(&count_received, payload + sizeof(uint32_t), sizeof(uint64_t)); 
-    size_t count = (size_t)(count_received); 
+    int server_fd; 
+    size_t count; 
+    size_t copy_out_offset = 0; 
+    copy_out(&server_fd, payload, sizeof(uint32_t), true, &copy_out_offset);
+    copy_out(&count, payload, sizeof(size_t), false, &copy_out_offset); 
 
     if (count == 0) {
         int64_t read_result = 0; 
-        uint32_t errno_network = htonl(0); 
 
         uint8_t* response = malloc(sizeof(uint64_t) + sizeof(uint32_t)); 
-        memcpy(response, &read_result, sizeof(uint64_t)); 
-        memcpy(response + sizeof(uint64_t), &errno_network, sizeof(uint32_t)); 
+        
+        size_t copy_in_offset_1 = 0; 
+        uint32_t lseek_errno_1 = 0; 
+        copy_in(response, &read_result, sizeof(int64_t), false, &copy_in_offset_1); 
+        copy_in(response, &lseek_errno_1, sizeof(uint32_t), true, &copy_in_offset_1);
+
+
         int rc = (send_all(sessfd, response, sizeof(uint32_t) + sizeof(uint64_t))); 
         free(response); 
         if (rc < 0) {
@@ -554,8 +553,6 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
     } else {
         read_errno = 0; 
     }
-    uint32_t errno_network = htonl((uint32_t)read_errno);
-    int64_t result_beamed = (int64_t)read_result; 
 
     size_t data_length; 
     if (read_result > 0) {
@@ -572,12 +569,12 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1; 
     }
 
-    memcpy(response_buf, &result_beamed, sizeof(ssize_t));
-    memcpy(response_buf + sizeof(ssize_t), &errno_network, sizeof(int)); 
+    size_t copy_in_offset_2 = 0; 
+    copy_in(response_buf, &read_result, sizeof(int64_t), false, &copy_in_offset_2); 
+    copy_in(response_buf, &read_errno, sizeof(uint32_t), true, &copy_in_offset_2); 
     if (data_length > 0) {
-        memcpy(response_buf + sizeof(ssize_t) + sizeof(int), read_buf, data_length); 
+        copy_in(response_buf, read_buf, data_length, false, &copy_in_offset_2); 
     }
-    
 
     if (send_all(sessfd, response_buf, sizeof(ssize_t) + sizeof(int) + data_length) < 0) {
         free(response_buf);
@@ -620,16 +617,27 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1;
     }
 
+    /*
     uint32_t path_length_network; 
     memcpy(&path_length_network, payload, sizeof(uint32_t)); 
     int path_length = (int)(ntohl(path_length_network)); 
+    */
+
+
+
+    size_t copy_out_offset = 0; 
+    int path_length; 
+    copy_out(&path_length, payload, sizeof(uint32_t), true, &copy_out_offset);
+
 
     char* path = (char*)malloc(path_length); 
     if (path == NULL) {
         free(path); 
         return -1; 
     }
-    memcpy(path, payload + sizeof(uint32_t), path_length); 
+
+
+    copy_out(path, payload, path_length, false, &copy_out_offset); 
 
     struct stat st; 
     int stat_result = stat(path, &st); 
@@ -641,8 +649,6 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
     } else {
         stat_errno = 0; 
     }
-    uint32_t stat_result_network = htonl((uint32_t)stat_result); 
-    uint32_t errno_network = htonl((uint32_t)stat_errno); 
     
 
     // [stat_result, 4][errno, 4][struct stat, sizeof(struct stat)] 
@@ -652,9 +658,11 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1; 
     }
 
-    memcpy(response_buf, &stat_result_network, sizeof(int)); 
-    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
-    memcpy(response_buf + sizeof(int) + sizeof(int), &st, sizeof(struct stat)); 
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &stat_result, sizeof(int), true, &copy_in_offset); 
+    copy_in(response_buf, &stat_errno, sizeof(int), true, &copy_in_offset); 
+    copy_in(response_buf, &st, sizeof(struct stat), false, &copy_in_offset); 
 
     if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int) + sizeof(struct stat)) < 0) {
         free(response_buf);
@@ -694,15 +702,17 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
         return -1;
     }
 
-    uint32_t path_length_network; 
-    memcpy(&path_length_network, payload, sizeof(uint32_t)); 
-    int path_length = (int)(ntohl(path_length_network)); 
+
+    size_t copy_out_offset = 0; 
+    int path_length; 
+    copy_out(&path_length, payload, sizeof(int32_t), true, &copy_out_offset); 
 
     char* path = (char*)malloc(path_length); 
     if (path == NULL) {
         return -1; 
     }
-    memcpy(path, payload + sizeof(uint32_t), path_length); 
+
+    copy_out(path, payload, path_length, false, &copy_out_offset); 
 
     int unlink_result = unlink(path); 
 
@@ -714,9 +724,6 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
     } else {
         unlink_errno = 0; 
     }
-
-    uint32_t unlink_result_network = htonl((uint32_t)unlink_result); 
-    uint32_t errno_network = htonl((uint32_t)unlink_errno); 
     
     // read response: [unlink_result, 4][unlink_errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(sizeof(uint32_t) + sizeof(uint32_t));
@@ -725,10 +732,15 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
         return -1; 
     }
 
-    memcpy(response_buf, &unlink_result_network, sizeof(uint32_t)); 
-    memcpy(response_buf + sizeof(uint32_t), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, sizeof(uint32_t) + sizeof(int)) < 0) {
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &unlink_result, sizeof(int32_t), true, &copy_in_offset); 
+    copy_in(response_buf, &unlink_errno, sizeof(int32_t), true, &copy_in_offset);
+
+
+
+    if (send_all(sessfd, response_buf, sizeof(uint32_t) + sizeof(int32_t)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -769,15 +781,17 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
         return -1;
     }
 
-    uint32_t server_fd_network; 
-    memcpy(&server_fd_network, payload, sizeof(int)); 
-    int server_fd = (int)(ntohl(server_fd_network)); 
 
+
+    size_t copy_out_offset = 0; 
+    uint32_t server_fd; 
     uint64_t nbytes; 
-    memcpy(&nbytes, payload + sizeof(int), sizeof(uint64_t)); 
-
     uint64_t base; 
-    memcpy(&base, payload + sizeof(int) + sizeof(uint64_t), sizeof(off_t)); 
+    copy_out(&server_fd, payload, sizeof(uint32_t), true, &copy_out_offset);
+    copy_out(&nbytes, payload, sizeof(uint64_t), false, &copy_out_offset); 
+    copy_out(&base, payload, sizeof(off_t), false, &copy_out_offset); 
+
+
 
     char* getdirentries_buf; 
     if (nbytes > 0) {
@@ -808,8 +822,6 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
         data_length = (size_t)getdirentries_result; 
     }
 
-    uint32_t getdirentries_errno_network = htonl((uint32_t)getdirentries_errno); 
-
     /**
      * getdirentries response: 
      *  [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
@@ -822,11 +834,13 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
         return -1; 
     }
 
-    memcpy(response_buf, &getdirentries_result, 8);
-    memcpy(response_buf + 8, &getdirentries_errno_network, 4); 
-    memcpy(response_buf + 12, basep, 8); 
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &getdirentries_result, sizeof(size_t), false, &copy_in_offset); 
+    copy_in(response_buf, &getdirentries_errno, sizeof(int32_t), true, &copy_in_offset); 
+    copy_in(response_buf, basep, sizeof(off_t), false, &copy_in_offset); 
     if (data_length > 0) {
-        memcpy(response_buf + 20, getdirentries_buf, data_length); 
+        copy_in(response_buf, getdirentries_buf, data_length, false, &copy_in_offset); 
     }
 
     int rc = send_all(sessfd, response_buf, 8 + 4 + 8 + data_length); 
@@ -863,10 +877,10 @@ static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, s
 
     *node_count += 1; 
     
-    size_t node_name_len = strlen(node->name) + 1; 
+    size_t node_name_len = strlen(node->name) + NUL_TERMINATOR_BYTES; 
 
     // A node is [num_subdirs, 4][name_len, 4][name, name_len]
-    *total_nodal_bytes += 4 + 4 + node_name_len; 
+    *total_nodal_bytes += sizeof(uint32_t) + sizeof(uint32_t) + node_name_len; 
 
 
     for (int i = 0; i < node->num_subdirs; i++) {
@@ -897,18 +911,15 @@ static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_
         return 0; 
     }
 
-    uint32_t node_name_length = (uint32_t)strlen(node->name) + 1; //Include '\0'. 
+    uint32_t node_name_length = (uint32_t)strlen(node->name) + NUL_TERMINATOR_BYTES; //Include '\0'. 
 
-    //Nodes in the form of [num_children, 4][name_len, 8][name, name_len] 
+    //Nodes in the form of [num_children, 4][name_len, 4][name, name_len] 
     int num_subdirs = node->num_subdirs; 
-    memcpy(nodal_message + *offset_p, &num_subdirs, 4); 
-    *offset_p += 4; 
+    copy_in(nodal_message, &num_subdirs, sizeof(uint32_t), false, offset_p); 
 
-    memcpy(nodal_message + *offset_p, &node_name_length, 4); 
-    *offset_p += 4; 
+    copy_in(nodal_message, &node_name_length, sizeof(uint32_t), false, offset_p); 
 
-    memcpy(nodal_message + *offset_p, node->name, node_name_length); 
-    *offset_p += node_name_length; 
+    copy_in(nodal_message, node->name, node_name_length, false, offset_p); 
 
     for (int i = 0; i < node->num_subdirs; i++) {
         marshal_nodes(node->subdirs[i], nodal_message, offset_p); 
@@ -931,8 +942,6 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot,
      *  - int getdirtree_errno: The errno that should be encoded into a message to the client. 
      */
 
-    // Serialize a tree structure. 
-
     // [node_count, 8][node_bytes, 8][getdirtree_errno, 4], then repeat [num_subdirs, 4][name_len, 4][name, name_len]
     if (bytes_to_send == NULL) {
         return NULL; 
@@ -947,7 +956,7 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot,
     }
 
 
-    size_t total_message_bytes = 8 + 8 + 4 + nodal_bytes; 
+    size_t total_message_bytes = sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint32_t) + nodal_bytes; 
     if (total_message_bytes > UINT32_MAX) {
         return NULL; 
     }
@@ -959,14 +968,13 @@ static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot,
 
     size_t message_offset = 0; 
 
-    memcpy(message + message_offset, &total_nodes, 8);
-    message_offset += 8; 
+    copy_in(message, &total_nodes, sizeof(uint64_t), false, &message_offset); 
 
-    memcpy(message + message_offset, &nodal_bytes, 8); 
-    message_offset += 8; 
 
-    memcpy(message + message_offset, &getdirtree_errno, 4); 
-    message_offset += 4; 
+    copy_in(message, &nodal_bytes, sizeof(uint64_t), false, &message_offset); 
+
+
+    copy_in(message, &getdirtree_errno, sizeof(uint32_t), false, &message_offset); 
 
     if (dirtreeroot != NULL) {
         size_t node_offset = 0; 
@@ -1006,20 +1014,20 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
      */
 
     //[path_length, 4][path, path_length]
-    if (payload_len < 4) {
+    if (payload_len < sizeof(uint32_t)) {
         fprintf(stderr, "Wrong getdirtree payload size: %u\n", payload_len);
         return -1;
     }
 
-    uint32_t path_length_network; 
-    memcpy(&path_length_network, payload, 4); 
-    int path_length = (int)(ntohl(path_length_network)); 
-
+    size_t copy_out_offset = 0; 
+    int path_length; 
+    copy_out(&path_length, payload, sizeof(int32_t), true, &copy_out_offset); 
     char* path = (char*)malloc(path_length); 
     if (path == NULL) {
         return -1; 
     }
-    memcpy(path, payload + 4, path_length); 
+    copy_out(path, payload, path_length, false, &copy_out_offset); 
+
 
     struct dirtreenode* getdirtree_result = getdirtree(path);  
     int getdirtree_errno; 
