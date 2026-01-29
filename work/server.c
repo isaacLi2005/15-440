@@ -9,9 +9,6 @@
  * understand the meaning of raw bytes sent back and forth. 
  */
 
-
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <arpa/inet.h>
@@ -63,6 +60,9 @@ void sigchld_handler(int sig) {
      * This function handles the SIGCHLD signal, for when a forked child process has finished running, by reaping any 
      * child processes that have finished. 
      * 
+     * Parameters: 
+     *  - int sig: A dummy input, used to make sure this function fits a required template for handlers. 
+     * 
      * This function was heavily inspired by a similiar function from the 15-213 textbook, Computer Systems - A 
      * Programmer's Perspective, Bryant et. al. 
      */
@@ -81,8 +81,12 @@ void sigchld_handler(int sig) {
 static int recv_all(int fd, void* buf, size_t n) {
     /**
      * This function makes sure that the entirety of n requested bytes is read from a particular file 
-     * (usually a socket). 
-     * This is used to prevent short reads. 
+     * (usually a socket). This is used to prevent short reads. 
+     * 
+     * Parameters: 
+     *  - int fd: The file descriptor we want to receive bytes on. 
+     *  - void* buf: The buffer we want to read bytes to. 
+     *  - size_t n: The number of bytes we want to receive. 
      * 
      * Returns 0 on success and -1 on failure. 
      */
@@ -107,6 +111,11 @@ static int send_all(int fd, const void *buf, size_t n) {
      * This function makes sure that the entirety of n requested bytes are sent to a particular file (usually a socket). 
      * This is used to prevent short writes. 
      * 
+     * Parameters: 
+     *  - int fd: The file descriptpor we want to send bytes to. 
+     *  - const void *buf: The buffer we want to send bytes from. 
+     *  - size_t n: The number of bytes we want to send to the file descriptor. 
+     * 
      * Returns 0 on success and -1 on failure. 
      */
 
@@ -127,6 +136,13 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
      * This function interprets the payload of an open RPC from the client into local arguments, passes those local 
      * arguments to the standard library open() function, and then responds to the client with the output of the 
      * standard library call. 
+     * 
+     * Parameters: 
+     *  - int sessfd: A file descriptor corresponding to the client being serviced. 
+     *  - const uint8_t* payload: The payload containing arguments for the open() function from the clients. 
+     *  - uint32_t payload_len: The length in bytes of the payload. 
+     * 
+     * Returns 0 on success and -1 on failure. 
      * 
      * The payload from the client is understood to have the following contiguous order: 
      * 1. [flags, 4 bytes]
@@ -207,6 +223,13 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
      * arguments to the standard library write() function, and then responds to the client with the output of the 
      * standard library call. 
      * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     * 
      * The payload from the client is understood to have the following contiguous order: 
      * 1. [server_fd, 4 bytes]
      * 2. [n_bytes, 8 bytes]
@@ -280,6 +303,13 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
      * arguments to the standard library close() function, and then responds to the client with the outputs of the 
      * standard library call. 
      * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     * 
      * The payload from the client is understood to have the following contiguous order: 
      * 1. [fd, 4 bytes]
      * 
@@ -329,6 +359,13 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
      * This function interprets the payload of an lseek RPC from the client into local arguments, passes those local 
      * arguments to the standard library lseek() function, and then responds to the client with the outputs of the 
      * standard library call. 
+     * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
      * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [server_fd, 4 bytes]
@@ -394,6 +431,13 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
      * This function interprets the payload of a read RPC from the client into local arguments, passes those local 
      * arguments to the standard library read() function, and then responds to the client with the outputs of the 
      * standard library call. 
+     * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
      * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [server_fd, 4 bytes]
@@ -490,6 +534,13 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
      * arguments to the standard library stat() function, and then responds to the client with the outputs of the 
      * standard library call. 
      * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [path_length, 4 bytes]
 	 * 2. [path, path_length bytes]
@@ -559,6 +610,13 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
      * arguments to the standard library unlink() function, and then responds to the client with the outputs of the 
      * standard library call. 
      * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
+     * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [path_length, 4 bytes]
 	 * 2. [path, path_length bytes]
@@ -623,6 +681,13 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
      * This function interprets the payload of an getdirentries RPC from the client into local arguments, passes those 
      * local arguments to the standard library getdirentries() function, and then responds to the client with the 
      * outputs of the standard library call. 
+     * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
      * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [server_fd, 4 bytes]
@@ -720,6 +785,14 @@ static void measure_dirtree_size(struct dirtreenode* node, size_t* node_count, s
     /**
      * Counts the total number of nodes and bytes that make up a dirtree starting from a given root node. 
      * 
+     * Parameters: 
+     *  - struct dirtree* node: The start/root node of the directory tree that we are counting the size of. 
+     *  - size_t* node_count: A pointer to the number of nodes that this function will update. 
+     *  - size_t* total_nodal_bytes: A pointer to the size in bytes across all the nodes in the tree that this 
+     *                               function will update. 
+     * 
+     * This function should update the values within node_count and total_nodal_bytes. 
+     * 
      * These sizes will be included to the response to the client for its getdirentries RPC. 
      */
 
@@ -744,6 +817,11 @@ static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_
     /**
      * Encodes the nodes of a tree for gitdirentries into a linear data structure in a buffer. Takes the node to 
      * write, the nodal_message buffer to write into, and the current offset within that bufffer. 
+     * 
+     * Parameters: 
+     *  - struct dirtreenode* node: The start/root node of the tree we want to encode into bytes. 
+     *  - uint8_t* nodal_message: The buffer of bytes that nodes will be serialized into. 
+     *  - size_t* oppset_p: Pointer to the location of nodal_message that the next node will be serialized into. 
      * 
      * For any node in the tree, writes down its number of children, the length of its name string, and then its name 
      * string. 
@@ -779,12 +857,17 @@ static int marshal_nodes(struct dirtreenode* node, uint8_t* nodal_message, size_
 
 }
 
-static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, uint32_t* bytes_to_send, int getdirtree_errno) {
+static uint8_t* convert_dirtree_to_message(struct dirtreenode* dirtreeroot, 
+                                           uint32_t* bytes_to_send, 
+                                           int getdirtree_errno) {
     /**
-     * Converts a dirtree into a linear message. 
+     * Converts a dirtree into a linear message that can be sent to the client. 
      * 
-     * The message will need to include information about the size of the dirtree as well as the actual nodes 
-     * themselves, and these can be done with the measure_dirtree_size() and marshal_nodes() functions. 
+     * Parameters: 
+     *  - struct getdirtrenode* dirtreeroot: The root of the directory tree we want to serialize. 
+     *  - uint32_t* bytes_to_send: A pointer that will be updated with the number of bytes that need to be sent 
+     *                             in a message to the client. 
+     *  - int getdirtree_errno: The errno that should be encoded into a message to the client. 
      */
 
     // Serialize a tree structure. 
@@ -842,6 +925,13 @@ static int handle_getdirtree_payload(int sessfd, const uint8_t* payload, uint32_
      * This function interprets the payload of an getdirtree RPC from the client into local arguments, passes those 
      * local arguments to the standard library getdirtree() function, and then responds to the client with the 
      * outputs of the standard library call. 
+     * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor corresponding to the client who has passed the payload. 
+     *  - const uint8_t* payload: The payload bytes containing the arguments for write() from the client. 
+     *  - uint32_t payload_length: The size of the payload in bytes from the client. 
+     * 
+     * Returns 0 on success and -1 on failure. 
      * 
      * The payload from the client is understood to have the following contiguous order: 
 	 * 1. [path_length, 4 bytes]
@@ -905,6 +995,11 @@ static int handle_one_message(int sessfd) {
      * This function takes in an entire RPC message from the client by listening out on a connected socket. This 
      * RPC message will include both a fixed header and the payload. 
      * 
+     * Parameters: 
+     *  - int sessfd: The file descriptor desciribng the socket that a client is listening for a response on. 
+     * 
+     * Return 1 on success, 0 on the client closing the connection, and -1 on error. 
+     * 
      * The fixed header is always formatted contiguously as such: 
      * 1. [opcode, 4 bytes]
      * 2. [payload_length, 4 bytes]
@@ -915,7 +1010,6 @@ static int handle_one_message(int sessfd) {
      * payload size. It then uses the now known payload size to capture the payload from the socket connection, and 
      * cases on the opcode in order to call the correct helper function. 
      * 
-     * Return 1 on success, 0 on the client closing the connection, and -1 on error. 
      */
 
 
@@ -993,6 +1087,14 @@ int main(int argc, char** argv) {
      * This main function implements the main loop of the server. We listen on a port to accept connections from 
      * clients into a socket, and when that occurs we fork off a child process so that we can handle that client in 
      * parallel with other clients. The child process simply runs handle_one_message. 
+     * 
+     * Parameters: 
+     *  - int argc: The number of command line arguments to this file's compiled executable. 
+     *  - char** argv: Array of string command line inputs into this file's compiled executable. 
+     * 
+     * Returns 0 on success. 
+     * 
+     * Exits with a nonzero status code on failure. 
      * 
      * We also install the handler for the children for when they finish executing. 
      */

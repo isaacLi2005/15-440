@@ -1186,6 +1186,12 @@ static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
 	/**
 	 * Sends the RPC request for a call to getdirentries. 
 	 * 
+	 * Parameters: 
+	 * 	- int serverfd: Specifies the directory we want to read entries from. 
+	 * 	- size_t nbytes: Specifies the maximum number of bytes to read. 
+	 * 	- off_t *basep: A pointer that is updated with the new offset after reading. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -1239,6 +1245,15 @@ ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
 	/**
 	 * Receives a response to the RPC for getdirentries. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we are listening for a server response on. 
+	 * 	- char* buf: The buffer we are reading the server's getdirentries() response ito. 
+	 * 	- off_t* basep: The base pointer we want to change based on how many bytes were read. 
+	 * 
+	 * Returns the server's result for its getdirentries() call on success and -1 on failure. 
+	 * 
+	 * Sets basep with the new position. 
+	 * 
 	 * Understand the server's response in this following contiguous order: 
 	 * 1. [getdirentries_result, 8 bytes]
 	 * 2. [getdirentries_errno, 4 bytes]
@@ -1282,6 +1297,14 @@ ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
 ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
 	/**
 	 * Interposes the getdirentries function from the standard library. 
+	 * 
+	 * Parameters 
+	 * 	- int fd: File descriptor indicating the directory we want to read the entries of. 
+	 * 	- char *buf: The buffer we want to read directory entries into. 
+	 * 	- size_t nbytes: The number of bytes we want to read into our buffer. 
+	 * 	- off_t *basep: The pointer we want to update with our new offset after reading bytes. 
+	 * 
+	 * Returns the number of bytes read on success and -1 on failure. 
 	 */
 
     if (is_remote_fd(fd) == false) {
@@ -1302,6 +1325,12 @@ ssize_t getdirentries(int fd, char *buf, size_t nbytes, off_t *basep) {
 static int rpc_send_getdirtree(int sockfd, const char* path) {
 	/**
 	 * Sends the RPC request for a call to getdirtree. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we want to send our RPC over. 
+	 * 	- const char* path: The string path to the directory we want to generate a tree of. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -1348,6 +1377,12 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdirs) {
 	/**
 	 * Allocates a dirtreenode with a given name and number of subdirectories. 
+	 * 
+	 * Parameters 
+	 * 	- const char* name: The name of the directory we are allocating a node for. 
+	 * 	- int num_subdirs: The number of subdirectories beneath the directory we are allocating a node for. 
+	 * 
+	 * Returns a pointer to a filled in dirtreenode struct. 
 	 * 
 	 * Will be used later when we have to read a response for getdirentries and create a tree from it. 
 	 */
@@ -1429,6 +1464,10 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
 	/**
 	 * Pushes a new element to the top of the stack. Resizes the stack if necessary. 
 	 * 
+	 * Parameters: 
+	 * 	- node_stack* stack: Pointer to the data structure we are pushing onto. 
+	 * 	- node_stack_entry pushed_elem: The element we are pushing onto the top of the stack. 
+	 * 
 	 * Returns 0 on success and exits on failure. 
 	 */
 
@@ -1454,7 +1493,11 @@ static int node_stack_push(node_stack* stack, node_stack_entry pushed_elem) {
 
 static node_stack_entry* node_stack_top(node_stack* stack) {
 	/**
+	 * Parameters: 
+	 * 	- node_stack* stack: Pointer to the stack data structure we are pushing onto. 
+	 * 
 	 * Returns the address of the top element of a stack. 
+	 * 
 	 */
 
     if (!stack || stack->size == 0) {
@@ -1465,7 +1508,12 @@ static node_stack_entry* node_stack_top(node_stack* stack) {
 
 void destroy_node_stack(node_stack* stack) {
 	/**
+	 * Parameters: 
+	 * 	- node_stac* stack: Pointer to the stack we want to free. 
+	 * 
 	 * Frees data associated with one element of the stack. 
+	 * 
+	 * 
 	 */
 
 	if (stack == NULL) {
@@ -1478,6 +1526,9 @@ void destroy_node_stack(node_stack* stack) {
 static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	/**
 	 * Receives the RPC response for a call to getdirtree. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket that we are listening for the server's response on. 
 	 * 
 	 * The arguments from the server are understood to have this contiguous order: 
 	 * Header 
@@ -1596,6 +1647,11 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 struct dirtreenode* getdirtree(const char *path) {
 	/**
 	 * This function interposes the getdirtree function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- const char *path: The string describing the path to the directory we are trying to get a path of. 
+	 * 
+	 * Returns a pointer to the directory tree structure, or NULL on failure. 
 	 */
 
 	if (rpc_send_getdirtree(sockfd, path) < 0) {
@@ -1609,6 +1665,11 @@ struct dirtreenode* getdirtree(const char *path) {
 void freedirtree(struct dirtreenode *dt) {
 	/**
 	 * This function interposes the freedirtree function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- struct dirtreenode *dt: Pointer to the directory tree. 
+	 * 
+	 * Frees the directory tree. 
 	 * 
 	 * Humorously, it is simply a pass-through function to the original freedirtree function. This works since the 
 	 * server is understood to have freed the directory tree on its end after sending it to the client, so there is 
