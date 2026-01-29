@@ -85,7 +85,7 @@ static int recv_all(int fd, void* buf, size_t n) {
      *  - void* buf: The buffer we want to read bytes to. 
      *  - size_t n: The number of bytes we want to receive. 
      * 
-     * Returns 0 on success and -1 on failure. 
+     * Returns 1 on success, 0 on an end of file, and -1 on failure. 
      */
 
     uint8_t* p = (uint8_t*)buf; 
@@ -126,6 +126,42 @@ static int send_all(int fd, const void *buf, size_t n) {
         sent += (size_t)rv;
     }
     return 0;
+}
+
+static void copy_in(uint8_t* dest_buf, const void* source, size_t num_bytes, 
+					  bool convert_to_network_endianness, size_t* dest_offset) {
+	/**
+	 * A helper function that handles copying data from a source into a destination at a particular offset. 
+	 * 
+	 * Parameters
+	 * 	- dest_buf: The buffer we are copying to. 
+	 * 	- source: The source of the data we want to copy over. 
+	 * 	- num_bytes: The number of bytes we want to copy over. 
+	 * 	- convert_to_network: Whether the converted bytes should be converted to network endianness. 
+	 * 	- dest_offset: Pointer to the offset in the destination we should be writing to. 
+	 * 
+	 * Has no return value. 
+	 * 
+	 * Has the effect of copying bytes over from source to dest_buf. 
+	 */
+
+	assert(dest_buf != NULL); 
+	assert(source != NULL); 
+	assert(dest_offset != NULL); 
+
+	if (convert_to_network_endianness == true) {
+		assert(num_bytes == sizeof(uint32_t));
+
+		uint32_t network_bytes; 
+		memcpy(&network_bytes, source, sizeof(uint32_t)); 
+		network_bytes = htonl(network_bytes); 
+		memcpy(dest_buf + *dest_offset, &network_bytes, num_bytes); 
+	} else {
+		memcpy(dest_buf + *dest_offset, source, num_bytes); 
+	}
+
+	*dest_offset += num_bytes;
+
 }
 
 static void copy_out(void* dest, const uint8_t* source_buf, size_t num_bytes, 
@@ -195,23 +231,11 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1;
     }
 
-    /*
-    uint32_t flags_network, mode_network, pathlen_network; 
-
-    memcpy(&flags_network, payload, sizeof(int)); 
-    memcpy(&mode_network, payload + sizeof(int), sizeof(int));
-    memcpy(&pathlen_network, payload + sizeof(int) + sizeof(int), sizeof(uint32_t)); 
-    
-    uint32_t flags = ntohl(flags_network);
-    uint32_t mode = ntohl(mode_network);
-    uint32_t pathlen = ntohl(pathlen_network);
-    */
-
-    size_t copy_offset = 0; 
+    size_t out_offset = 0; 
     uint32_t flags, mode, pathlen; 
-    copy_out(&flags, payload, sizeof(uint32_t), true, &copy_offset); 
-    copy_out(&mode, payload, sizeof(uint32_t), true, &copy_offset);
-    copy_out(&pathlen, payload, sizeof(uint32_t), true, &copy_offset); 
+    copy_out(&flags, payload, sizeof(uint32_t), true, &out_offset); 
+    copy_out(&mode, payload, sizeof(uint32_t), true, &out_offset);
+    copy_out(&pathlen, payload, sizeof(uint32_t), true, &out_offset); 
 
     if ((uint32_t)(sizeof(int) + sizeof(int) + sizeof(uint32_t)) + pathlen != payload_len) {
         fprintf(stderr, "OPEN payload mismatch: payload_len is %u, pathlen is %u \n", payload_len, pathlen);
@@ -239,17 +263,15 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
     } else {
         ret_errno = 0;
     }
-
-    uint32_t fd_network = htonl((uint32_t)ret_fd);
-    uint32_t errno_network = htonl((uint32_t)ret_errno);
-
     // Open response: [fd, 4][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int) + sizeof(int));
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int32_t) + sizeof(int32_t));
     if (response_buf == NULL) {
         return -1; 
     }
-    memcpy(response_buf, &fd_network, sizeof(int));
-    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
+
+    size_t in_offset = 0; 
+    copy_in(response_buf, &ret_fd, sizeof(int32_t), true, &in_offset); 
+    copy_in(response_buf, &ret_errno, sizeof(int32_t), true, &in_offset); 
 
     if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int)) < 0) {
         free(response_buf);
@@ -289,12 +311,11 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         return -1; 
     }
 
-    uint32_t server_fd_network; 
+    int32_t server_fd; 
     uint64_t n_bytes; 
-    memcpy(&server_fd_network, payload, sizeof(uint32_t)); 
-    memcpy(&n_bytes, payload + sizeof(uint32_t), sizeof(uint64_t));
-
-    int32_t server_fd = (int32_t)ntohl(server_fd_network); 
+    size_t copy_out_offset = 0; 
+    copy_out(&server_fd, payload, sizeof(uint32_t), true, &copy_out_offset); 
+    copy_out(&n_bytes, payload, sizeof(uint64_t), false, &copy_out_offset); 
 
     if ((uint64_t)(sizeof(uint32_t) + sizeof(uint64_t)) + n_bytes != (uint64_t)payload_len) {
         fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%lu\n", payload_len, n_bytes);
@@ -309,7 +330,8 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         fprintf(stderr, "malloc fails in write");
         return -1; 
     }
-    memcpy(write_bytes, payload + sizeof(uint32_t) + sizeof(uint64_t), n_bytes); 
+    copy_out(write_bytes, payload, n_bytes, false, &copy_out_offset); 
+
     ssize_t write_result = write(server_fd, write_bytes, n_bytes); 
     free(write_bytes); 
 
@@ -320,16 +342,15 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         ret_errno = 0;
     }
 
-    uint32_t errno_network = htonl((uint32_t)ret_errno);
-
     // Write response: [result, 8][errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(sizeof(ssize_t) + sizeof(int));
     if (response_buf == NULL) {
         return -1; 
     }
-    int64_t write_result_for_sending = (int64_t)write_result;
-    memcpy(response_buf, &write_result_for_sending, sizeof(ssize_t));
-    memcpy(response_buf + sizeof(ssize_t), &errno_network, sizeof(int)); 
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &write_result, sizeof(int64_t), false, &copy_in_offset); 
+    copy_in(response_buf, &ret_errno, sizeof(int32_t), true, &copy_in_offset); 
 
     if (send_all(sessfd, response_buf, sizeof(ssize_t) + sizeof(int)) < 0) {
         free(response_buf);
@@ -367,10 +388,9 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
         return -1;
     }
 
-    uint32_t fd_network; 
-    memcpy(&fd_network, payload, sizeof(uint32_t)); 
-
-    int32_t server_fd = (int32_t)(ntohl(fd_network)); 
+    size_t copy_out_offset = 0; 
+    int32_t server_fd; 
+    copy_out(&server_fd, payload, sizeof(uint32_t), true, &copy_out_offset); 
 
     int close_return = close((int)server_fd); 
     int32_t close_errno;
@@ -380,13 +400,12 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
         close_errno = 0; 
     }
 
-    uint32_t close_return_network = htonl((uint32_t)close_return);
-    uint32_t errno_network = htonl((uint32_t)close_errno);
-
     // Open response: [fd, 4][errno, 4]
     uint8_t* response_buf = (uint8_t*)malloc(sizeof(int) + sizeof(int));
-    memcpy(response_buf, &close_return_network, sizeof(int));
-    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
+
+    size_t copy_in_offset = 0; 
+    copy_in(response_buf, &close_return, sizeof(uint32_t), true, &copy_in_offset); 
+    copy_in(response_buf, &close_errno, sizeof(uint32_t), true, &copy_in_offset); 
 
     if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int)) < 0) {
         free(response_buf);

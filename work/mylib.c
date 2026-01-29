@@ -322,7 +322,7 @@ static int recv_all(int fd, void* buf, size_t n) {
 	 * 	- const void* buf: The source of the bytes we want to send to fd. 
 	 * 	- size_t n: The number of bytes we want to send over. 
      * 
-     * Returns 0 on success and -1 on failure. 
+     * Returns 1 on success, 0 on an end of file, and -1 on failure. 
      */
 
     uint8_t* p = (uint8_t*)buf; 
@@ -1616,10 +1616,11 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 
 	struct dirtreenode* root = NULL; 
 
+
 	for (uint64_t i = 0; i < node_count; i++) {
 		uint32_t num_subdirs = 0; 
 		uint32_t name_len = 0; 
-
+		
 		memcpy(&num_subdirs, current_p, sizeof(uint32_t)); 
 		current_p += sizeof(uint32_t); 
 		memcpy(&name_len, current_p, sizeof(uint32_t)); 
