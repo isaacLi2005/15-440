@@ -75,6 +75,13 @@
 #define HEADER_BYTES 8
 
 /**
+ * An initial size for a node stack. 
+ * 
+ * Chosen absolutely arbitrarily. 
+ */
+#define NODE_STACK_STARTING_SIZE 4
+
+/**
  * We will create a lookup table that holds the actual remote file desciptors that the server uses, without the 
  * offset, and index into this table to find that file descriptor value. This struct will later be used in that 
  * lookup table, and at a particular index will indicate whether that file is open (in_use) and what the original 
@@ -381,10 +388,10 @@ static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes,
 	assert(dest_offset != NULL); 
 
 	if (convert_to_network_endianness == true) {
-		assert(num_bytes == 4);
+		assert(num_bytes == sizeof(uint32_t));
 
 		uint32_t network_bytes; 
-		memcpy(&network_bytes, source, 4); 
+		memcpy(&network_bytes, source, sizeof(uint32_t)); 
 		network_bytes = htonl(network_bytes); 
 		memcpy(dest_buf + *dest_offset, &network_bytes, num_bytes); 
 	} else {
@@ -1024,11 +1031,11 @@ static int rpc_send_stat(int sockfd, const char *restrict path) {
 	 */
 
 
-	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+	uint32_t path_length = strlen(path) + NUL_TERMINATOR_BYTES;
 
 	// Payload = int + off_t + int
-	uint32_t payload_len = (uint32_t)(4 + path_length); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + path_length); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -1036,12 +1043,12 @@ static int rpc_send_stat(int sockfd, const char *restrict path) {
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_STAT; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
-	copy_over(buf, &path_length, 4, true, &buf_offset); 
+	copy_over(buf, &path_length, sizeof(uint32_t), true, &buf_offset); 
 
 	copy_over(buf, path, path_length, false, &buf_offset); 
 
@@ -1078,11 +1085,11 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 	uint32_t stat_return_network; 
 	uint32_t errno_network; 
 
-	if (recv_all(sockfd, &stat_return_network, 4) <= 0) {
+	if (recv_all(sockfd, &stat_return_network, sizeof(uint32_t)) <= 0) {
 		return -1; 
 	}
 
-	if (recv_all(sockfd, &errno_network, 4) <= 0) {
+	if (recv_all(sockfd, &errno_network, sizeof(int)) <= 0) {
 		return -1; 
 	}
 
@@ -1138,11 +1145,10 @@ static int rpc_send_unlink(int sockfd, const char *restrict path) {
 	 * 4. [path, path_length bytes]
 	 */
 
-	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+	uint32_t path_length = strlen(path) + NUL_TERMINATOR_BYTES; 
 
-	// Payload = int + off_t + int
-	uint32_t payload_len = (uint32_t)(4 + path_length); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(uint32_t) + path_length); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -1150,12 +1156,12 @@ static int rpc_send_unlink(int sockfd, const char *restrict path) {
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_UNLINK; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
-	copy_over(buf, &path_length, 4, true, &buf_offset); 
+	copy_over(buf, &path_length, sizeof(uint32_t), true, &buf_offset); 
 
 	copy_over(buf, path, path_length, false, &buf_offset); 
 
@@ -1218,24 +1224,24 @@ static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
 	off_t base = *basep; 
 
 	// Payload = int + size_t + off_t 
-	uint32_t payload_len = (uint32_t)(4 + 8 + 8); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(int) + sizeof(size_t) + sizeof(off_t)); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 	size_t buf_offset = 0;
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_GETDIRENTRIES; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
-	copy_over(buf, &server_fd, 4, true, &buf_offset); 
+	copy_over(buf, &server_fd, sizeof(int), true, &buf_offset); 
 
-	copy_over(buf, &nbytes, 8, false, &buf_offset); 
+	copy_over(buf, &nbytes, sizeof(size_t), false, &buf_offset); 
 
-	copy_over(buf, &base, 8, false, &buf_offset); 
+	copy_over(buf, &base, sizeof(off_t), false, &buf_offset); 
 
 	// Send the buffer. 
 	int rc = send_all(sockfd, buf, total_len); 
@@ -1273,16 +1279,16 @@ ssize_t rpc_recv_getdirentries_response(int sockfd, char* buf, off_t* basep) {
 	uint32_t getdirentries_errno_network; 
 	off_t new_base; 
 
-	if (recv_all(sockfd, &getdirentries_result, 8) <= 0) {
+	if (recv_all(sockfd, &getdirentries_result, sizeof(ssize_t)) <= 0) {
 		return -1; 
 	}
 
-	if (recv_all(sockfd, &getdirentries_errno_network, 4) <= 0) {
+	if (recv_all(sockfd, &getdirentries_errno_network, sizeof(int)) <= 0) {
 		return -1; 
 	}
 	int32_t getdirentries_errno = (int32_t)(ntohl(getdirentries_errno_network)); 
 
-	if (recv_all(sockfd, &new_base, 8) <= 0) {
+	if (recv_all(sockfd, &new_base, sizeof(off_t)) <= 0) {
 		return -1; 
 	}
 
@@ -1349,11 +1355,10 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 	 * 4. [path, path_length bytes]
 	 */
 
-	uint32_t path_length = strlen(path) + 1; // Including '\0' in path. 
+	uint32_t path_length = strlen(path) + NUL_TERMINATOR_BYTES; 
 
-	// Payload = int + off_t + int
-	uint32_t payload_len = (uint32_t)(4 + path_length); 
-	uint32_t total_len = 8 + payload_len; 
+	uint32_t payload_len = (uint32_t)(sizeof(uint32_t) + path_length); 
+	uint32_t total_len = HEADER_BYTES + payload_len; 
 
 	uint8_t* buf = create_rpc_buf(total_len); 
 
@@ -1361,12 +1366,12 @@ static int rpc_send_getdirtree(int sockfd, const char* path) {
 
 	// Header start
 	uint32_t op_number = (uint32_t)OP_GETDIRTREE; 
-	copy_over(buf, &op_number, 4, true, &buf_offset); 
+	copy_over(buf, &op_number, sizeof(uint32_t), true, &buf_offset); 
 
-	copy_over(buf, &payload_len, 4, true, &buf_offset); 
+	copy_over(buf, &payload_len, sizeof(uint32_t), true, &buf_offset); 
 
 	// Payload start
-	copy_over(buf, &path_length, 4, true, &buf_offset); 
+	copy_over(buf, &path_length, sizeof(uint32_t), true, &buf_offset); 
 
 	copy_over(buf, path, path_length, false, &buf_offset); 
 
@@ -1404,7 +1409,7 @@ static struct dirtreenode* allocate_dirtreenode(const char* name, int num_subdir
 		return NULL; 
 	}
 
-	size_t name_len = strlen(name) + 1; 
+	size_t name_len = strlen(name) + NUL_TERMINATOR_BYTES; 
     node->name = (char*)malloc(name_len);
     if (!node->name) {
         free(node);
@@ -1456,14 +1461,14 @@ static node_stack* create_node_stack(void) {
 		exit(1); 
 	}
 
-	stack->data = (node_stack_entry*)malloc(4 * sizeof(node_stack_entry)); 
+	stack->data = (node_stack_entry*)malloc(NODE_STACK_STARTING_SIZE * sizeof(node_stack_entry)); 
 	if (stack->data == NULL) {
 		free(stack); 
 		exit(1); 
 	}
 
 	stack->size = 0; 
-	stack->capacity = 4; 
+	stack->capacity = NODE_STACK_STARTING_SIZE; 
 
 	return stack; 
 }
@@ -1520,8 +1525,6 @@ void destroy_node_stack(node_stack* stack) {
 	 * 	- node_stac* stack: Pointer to the stack we want to free. 
 	 * 
 	 * Frees data associated with one element of the stack. 
-	 * 
-	 * 
 	 */
 
 	if (stack == NULL) {
@@ -1578,15 +1581,15 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 	uint64_t node_bytes = 0; 
 	int getdirtree_errno; 
 
-	if (recv_all(sockfd, &node_count, 8) <= 0) {
+	if (recv_all(sockfd, &node_count, sizeof(uint64_t)) <= 0) {
 		return NULL; 
 	}
 	
-	if (recv_all(sockfd, &node_bytes, 8) <= 0) {
+	if (recv_all(sockfd, &node_bytes, sizeof(uint64_t)) <= 0) {
 		return NULL; 
 	}
 	
-	if (recv_all(sockfd, &getdirtree_errno, 4) <= 0) {
+	if (recv_all(sockfd, &getdirtree_errno, sizeof(int)) <= 0) {
 		return NULL; 
 	}
 
@@ -1617,10 +1620,10 @@ static struct dirtreenode* rpc_recv_getdirtree_response(int sockfd) {
 		uint32_t num_subdirs = 0; 
 		uint32_t name_len = 0; 
 
-		memcpy(&num_subdirs, current_p, 4); 
-		current_p += 4; 
-		memcpy(&name_len, current_p, 4); 
-		current_p += 4; 
+		memcpy(&num_subdirs, current_p, sizeof(uint32_t)); 
+		current_p += sizeof(uint32_t); 
+		memcpy(&name_len, current_p, sizeof(uint32_t)); 
+		current_p += sizeof(uint32_t); 
 
 		char* name = (char*)current_p; 
 
