@@ -79,6 +79,9 @@ static size_t remote_entry_capacity = 0;
 static int ensure_remote_size(size_t num_needed) {
 	/**
 	 * Ensures that the remote_entries table will have at least num_needed total capacity by resizing it. 
+	 * 
+	 * Parameters:
+	 * 	- size_t num_needed: The number of entries that we want the fd lookup table to be able to contain.  
 	 * 	 
 	 * Returns 0 on success and -1 on failure. 
 	 */
@@ -132,6 +135,9 @@ static int record_remote_fd(int server_fd) {
 	 * 
 	 * This function was debugged using Gemini. 
 	 * 
+	 * Parameters: 
+	 * 	- int server_fd: The file descriptor that is used on the remote server. 
+	 * 
 	 * Returns 0 on success and -1 on failure. 
 	 */
 	if (remote_entry_capacity == 0) {
@@ -172,6 +178,11 @@ static bool is_remote_fd(int fd) {
 	 * Our code distinguishes remote file descriptors from local ones by making sure that remote ones are at least 
 	 * REMOTE_FD_OFFSET. So, we can easily tell when a file descriptor came from the remote server by if it has a 
 	 * value of at least REMOTE_FD_OFFSET. 
+	 * 
+	 * Paramters: 
+	 * 	- int fd: The file descriptor that we want to tell if it is a local or remote file descriptor. 
+	 * 
+	 * Returns true if fd is a remote file descriptor, and false otherwise. 
 	 */
 
 	if (fd < REMOTE_FD_OFFSET) {
@@ -188,6 +199,11 @@ static bool is_remote_fd(int fd) {
 static void free_remote_fd(int client_fd) {
 	/**
 	 * Frees a remote file descriptor by marking it unused in the table and clearing the old value out. 
+	 * 
+	 * Parameters: 
+	 * 	- int client_fd: The file descriptor given to the client that could be either local or from the remote server. 
+	 * 
+	 * This function has no return value. 
 	 */
 
 	if (is_remote_fd(client_fd) == false) {
@@ -205,6 +221,12 @@ static int client_fd_to_server_fd(int client_fd) {
 	 * 
 	 * If we can tell that the input file descriptor is not actually a remote file descriptor, we return -1 to indicate 
 	 * an error. 
+	 * 
+	 * Parameters: 
+	 * 	- client_fd: A file descriptor that could either be local or remote. 
+	 * 
+	 * Returns -1 if it was in fact already a client file descriptor, otherwise returns the server's corresponding 
+	 * fiile descriptor which was stored in the lookup table. 
 	 */
 	if (is_remote_fd(client_fd) == false) {
 		return -1; 
@@ -246,11 +268,16 @@ enum {
 	OP_GETDIRTREE = 9
 };
 
-static int send_all(int fd, const void *buf, size_t n) {
+static int send_all(int fd, const void* buf, size_t n) {
 	/**
      * This function makes sure that the entirety of n requested bytes are sent to a particular file (usually a socket). 
      * This is used to prevent short writes. 
      * 
+	 * Parameters: 
+	 * 	- int fd: The fiile descriptor we want to send our bytes to. 
+	 * 	- const void* buf: The source of the bytes we want to send to fd. 
+	 * 	- size_t n: The number of bytes we want to send over. 
+	 * 
      * Returns 0 on success and -1 on failure. 
      */
 
@@ -271,6 +298,11 @@ static int recv_all(int fd, void* buf, size_t n) {
      * This function makes sure that the entirety of n requested bytes is read from a particular file 
      * (usually a socket). 
      * This is used to prevent short reads. 
+	 * 
+	 * Parameters: 
+	 * 	- int fd: The fiile descriptor we want to receive or bytes from. 
+	 * 	- const void* buf: The source of the bytes we want to send to fd. 
+	 * 	- size_t n: The number of bytes we want to send over. 
      * 
      * Returns 0 on success and -1 on failure. 
      */
@@ -293,6 +325,9 @@ static int recv_all(int fd, void* buf, size_t n) {
 static uint8_t* create_rpc_buf(uint32_t total_size) {
 	/**
 	 * A helper function that creates a buffer that will be used for RPC calls in later functions. 
+	 * 
+	 * Parameters: 
+	 * 	- uint32_t total_size: The number of bytes we want to make our buffer. 
 	 * 
 	 * Crashes the process if malloc() failed. 
 	 */
@@ -324,6 +359,10 @@ static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes,
 	 * 	- num_bytes: The number of bytes we want to copy over. 
 	 * 	- convert_to_network: Whether the converted bytes should be converted to network endianness. 
 	 * 	- dest_offset: Pointer to the offset in the destination we should be writing to. 
+	 * 
+	 * Has no return value. 
+	 * 
+	 * Has the effect of copying bytes over from source to dest_buf. 
 	 */
 	
 
@@ -350,6 +389,14 @@ static void copy_over(uint8_t* dest_buf, const void* source, size_t num_bytes,
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
 	/**
 	 * Handles a remote procedure call for an open command over the server. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket we want to send our RPC over. 
+	 * 	- const char* pathname: The name of the file we want to open on the remote server. 
+	 * 	- int flags: An integer whose bits specify the mode we want to open with. 
+	 * 	- mode_t mode: Specifies file mode bits when a new file is created. Ignored if we are not creating a file. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The message buffer to the server is contiguously laid out in the following order: 
 	 * 1. Header
@@ -406,6 +453,11 @@ static int rpc_recv_int_and_errno_response(int sockfd) {
 	 * Receives a response from the server that is understood to represent an integer result and an errno. 
 	 * If the integer result is negative, sets errno to the received errno. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket we want to receive our response from. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
+	 * 
 	 * The response is understood to be in this contiguous order: 
 	 * 1. [int_result, 4 bytes]
 	 * 2. [errno, 4 bytes]
@@ -435,9 +487,13 @@ static int rpc_recv_int_and_errno_response(int sockfd) {
 	}
 }
 
-int open(const char *pathname, int flags, ...) {
+int open(const char* pathname, int flags, ...) {
 	/**
 	 * The function that is interposed over the standard open function. 
+	 * 
+	 * Parameters: 
+	 * 	- const char* pathname: The path to the file we want to open. 
+	 * 	- int flags: An integer whose bits specify how we want to open our file. 
 	 * 
 	 * Simply sends and receives an RPC call to the server with the opcode for open and its arguments. 
 	 */
@@ -474,6 +530,12 @@ int open(const char *pathname, int flags, ...) {
 static int rpc_send_close(int sockfd, int fd) {
 	/**
 	 * Sends a RPC for the close function to the server. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket over which we wish to send our RPC call. 
+	 * 	- int fd: The file descriptor we want to close on the remote server. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The message sent to the server has this structure: 
 	 * Header 
@@ -523,6 +585,11 @@ static int rpc_send_close(int sockfd, int fd) {
 int close(int fd) {
 	/**
 	 * Interposes the close function of the standard library using the rpc_send_close function. 
+	 * 
+	 * Parameters: 
+	 * 	- int fd: The file descriptor we wish to close. 
+	 * 
+	 * Returns 0 on succes and -1 on failure. 
 	 */
 
 	if (is_remote_fd(fd) == false) {
@@ -546,6 +613,14 @@ int close(int fd) {
 static int rpc_send_write(int sockfd, int server_fd, const void* write_buf, size_t n_bytes) {
 	/**
 	 * Sends a RPC for the write function towards the server. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket we wish to send our RPC over. 
+	 * 	- int server_fd: The file descriptor on the remote server we wish to write to. 
+	 * 	- const void* write_buf: The buffer with bytes that we want to write to the server. 
+	 * 	- size_t n_bytes: The number of bytes we want to write to the server's file. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -603,6 +678,11 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 	/**
 	 * Receives a response to the RPC for write. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket we want to receive our response over. 
+	 * 
+	 * Returns the number of bytes written on success and -1 on failure. 
+	 * 
 	 * Understand the server's response in this following contiguous order: 
 	 * 1. [write_size, 8 bytes]
 	 * 2. [errno, 4 bytes]
@@ -638,6 +718,13 @@ static ssize_t rpc_recv_write_response(int sockfd) {
 ssize_t write(int fd, const void* buf, size_t n_bytes) {
 	/**
 	 * Interposes the write function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- int fd: The file descriptor we wish to write to. 
+	 * 	- const void* buf: The buffer of bytes that we wish to write to another file. 
+	 * 	- size_t n_bytes: The number of bytes we want to write from buf to the file. 
+	 * 
+	 * Returns the number of bytes written on success and -1 on failure. 
 	 */
 
 	if (is_remote_fd(fd) == false) {
@@ -657,6 +744,13 @@ ssize_t write(int fd, const void* buf, size_t n_bytes) {
 static int rpc_send_read(int sockfd, int server_fd, size_t count) {
 	/**
 	 * Sends the RPC request for a call to read. 
+	 * 
+	 * Parameters
+	 * 	- int sockfd: The file descriptor of the socket we are sending an RPC over. 
+	 * 	- int server_fd: The file descriptor on the remote server we want to read. 
+	 * 	- size_t count: The number of bytes we want to read from the file. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -707,6 +801,12 @@ static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
 	/**
 	 * Receives a response to the RPC for read. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor describing the socket we are sending an RPC over. 
+	 * 	- void* buf: The buffer we want to move the resulting read bytes into. 
+	 * 
+	 * Returns the number of bytes read on success and -1 on failure. 
+	 * 
 	 * Understand the server's response in this following contiguous order: 
 	 * 1. [read_result, 8 bytes]
 	 * 2. [errno, 4 bytes]
@@ -755,6 +855,13 @@ static ssize_t rpc_recv_read_response(int sockfd, void* buf) {
 ssize_t read(int fd, void *buf, size_t count) {
 	/**
 	 * Interposes the read function from the standard library. 
+	 * 
+	 * Paramaeters
+	 * 	- int fd: The file descriptor we want to read. 
+	 * 	- void* buf: The buffer we want to read bytes into. 
+	 * 	- size_t count: The number of bytes we want to read from the file into our buffer. 
+	 * 
+	 * Returns the number of bytes read on success and -1 on failure. 
 	 */
 
 	if (is_remote_fd(fd) == false) {
@@ -773,6 +880,14 @@ ssize_t read(int fd, void *buf, size_t count) {
 static int rpc_send_lseek(int sockfd, int server_fd, off_t offset, int whence) {
 	/**
 	 * Sends the RPC request for a call to lseek. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we are sending our RPC over. 
+	 * 	- int server_fd: The file descriptor on the remote server we want to run lseek() on. 
+	 * 	- off_t offset: The offset within the file that will be set. 
+	 * 	- int whence: Describes how to set offset. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -822,6 +937,11 @@ static off_t rpc_recv_lseek_response(int sockfd) {
 	/**
 	 * Receives a response to the RPC for lseek. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we are listening for a response on. 
+	 * 
+	 * Returns the new offset value on success and -1 on failure. 
+	 * 
 	 * Understand the server's response in this following contiguous order: 
 	 * 1. [seeked, 8 bytes]
 	 * 2. [errno, 4 bytes]
@@ -855,6 +975,11 @@ static off_t rpc_recv_lseek_response(int sockfd) {
 off_t lseek(int fd, off_t offset, int whence) {
 	/**
 	 * Interposes the lseek function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- int fd: The file descriptor we want to lseek on. 
+	 * 	- off_t offset: The offset we want to set on the file. 
+	 * 	- int whence: Flags describing how to set offset. 
 	 */
 
 	if (is_remote_fd(fd) == false) {
@@ -874,6 +999,12 @@ off_t lseek(int fd, off_t offset, int whence) {
 static int rpc_send_stat(int sockfd, const char *restrict path) {
 	/**
 	 * Sends the RPC request for a call to stat. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The socket we want to send our RPC over. 
+	 * 	- const char *restrict path: The path of the file we want to run stat on. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -922,6 +1053,14 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 	/**
 	 * Receives a response to the RPC for stat. 
 	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we are listening for a response on. 
+	 * 	- struct stat* statbuf: The struct we want to read the server's rersponse structure from. 
+	 * 
+	 * Returns the same value the server returned for stat, or -1 otherwise. 
+	 * 
+	 * Fills the input statbuf struct with data on success. 
+	 * 
 	 * Understand the server's response in this following contiguous order: 
 	 * 1. [stat_result, 4 bytes]
 	 * 2. [errno, 4 bytes]
@@ -958,6 +1097,10 @@ static int rpc_recv_stat_response(int sockfd, struct stat* statbuf) {
 int stat(const char *restrict path, struct stat *restrict statbuf) {
 	/**
 	 * Interposes the stat function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- const char *restrict path: The file path we want to run stat on. 
+	 * 	- struct stat *restrict statbuf: The structure we want to read our results into. 
 	 */
 
 	if (rpc_send_stat(sockfd, path) < 0) {
@@ -971,6 +1114,12 @@ int stat(const char *restrict path, struct stat *restrict statbuf) {
 static int rpc_send_unlink(int sockfd, const char *restrict path) {
 	/**
 	 * Sends the RPC request for a call to unlink. 
+	 * 
+	 * Parameters: 
+	 * 	- int sockfd: The file descriptor of the socket we want to send our RPC over. 
+	 * 	- const char *restrict path: The path to the file we want to unlink on. 
+	 * 
+	 * Returns 0 on success and -1 on failure. 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -1018,6 +1167,11 @@ static int rpc_send_unlink(int sockfd, const char *restrict path) {
 int unlink(const char *pathname) {
 	/**
 	 * Interposes the unlink function from the standard library. 
+	 * 
+	 * Parameters: 
+	 * 	- const char *pathname: The string path of the file we want to run unlink() on. 
+	 * 	
+	 * Returns the server's return value of unlink on success and -1 on failure. 
 	 */
 
 	if (rpc_send_unlink(sockfd, pathname) < 0) {
@@ -1031,6 +1185,7 @@ int unlink(const char *pathname) {
 static int rpc_send_getdirentries(int server_fd, size_t nbytes, off_t *basep) {
 	/**
 	 * Sends the RPC request for a call to getdirentries. 
+	 * 
 	 * 
 	 * The arguments towards the server have this contiguous order: 
 	 * Header 
@@ -1487,11 +1642,18 @@ void _init(void) {
 
 	// Create a socket fd
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sockfd == -1) {
+		exit(1); 
+	}
 
 	struct sockaddr_in srv; // address structure
 	memset(&srv, 0, sizeof(srv)); // zero it out
 	srv.sin_family = AF_INET; // will be IP address and port
 	char* serverIP = getenv("server15440");
+	if (serverIP == NULL) {
+		exit(1); 
+	}
+
 	srv.sin_addr.s_addr = inet_addr(serverIP); // server IP
 	unsigned short serverPort = atoi(getenv("serverport15440"));
 	srv.sin_port = htons(serverPort); 
