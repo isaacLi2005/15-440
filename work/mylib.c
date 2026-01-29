@@ -313,6 +313,40 @@ static void free_rpc_buf(uint8_t* rpc_buf) {
 	free(rpc_buf);
 }
 
+static void copy_over(uint8_t* dest_buf, void* source, size_t num_bytes, 
+					  bool convert_to_network_endianness, off_t* dest_offset) {
+	/**
+	 * A helper function that handles copying data from a source into a destination at a particular offset. 
+	 * 
+	 * Parameters
+	 * 	- dest_buf: The buffer we are copying to. 
+	 * 	- source: The source of the data we want to copy over. 
+	 * 	- num_bytes: The number of bytes we want to copy over. 
+	 * 	- convert_to_network: Whether the converted bytes should be converted to network endianness. 
+	 * 	- dest_offset: Pointer to the offset in the destination we should be writing to. 
+	 */
+	
+
+
+	assert(dest_buf != NULL); 
+	assert(source != NULL); 
+	assert(dest_offset != NULL); 
+
+	if (convert_to_network_endianness == true) {
+		assert(num_bytes == 4);
+
+		uint32_t network_bytes; 
+		memcpy(&network_bytes, source, 4); 
+		network_bytes = htonl(network_bytes); 
+		memcpy(dest_buf + *dest_offset, &network_bytes, num_bytes); 
+	} else {
+		memcpy(dest_buf + *dest_offset, source, num_bytes); 
+	}
+
+	*dest_offset += num_bytes;
+
+	}
+
 static int rpc_send_open(int sockfd, const char* pathname, int flags, mode_t mode) {
 	/**
 	 * Handles a remote procedure call for an open command over the server. 
