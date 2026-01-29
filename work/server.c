@@ -36,9 +36,6 @@
 #include <signal.h>  
 #include <sys/wait.h> 
 
-#define MAXMSGLEN 100 
-
-
 /**
  * The integer opcodes we define here are understood to be the same across the server and the client. 
  * These allow the server and the client to agree on the meaning of bytes in packages sent across the network. 
@@ -131,6 +128,43 @@ static int send_all(int fd, const void *buf, size_t n) {
     return 0;
 }
 
+static void copy_out(void* dest, const uint8_t* source_buf, size_t num_bytes, 
+					  bool convert_from_network_endianness, size_t* source_offset) {
+	/**
+	 * A helper function that handles copying data from a source into a destination at a particular offset from the 
+     * source. 
+	 * 
+	 * Parameters
+	 * 	- dest_buf: The buffer we are copying to. 
+	 * 	- source: The source of the data we want to copy over. 
+	 * 	- num_bytes: The number of bytes we want to copy over. 
+	 * 	- convert_to_local_endianness: Whether the converted bytes should be converted from network endianness. 
+	 * 	- source_offset: Pointer to the offset in the source we should be writing from. 
+	 * 
+	 * Has no return value. 
+	 * 
+	 * Has the effect of copying bytes over from source to dest_buf. 
+	 */
+
+	assert(dest != NULL); 
+	assert(source_buf != NULL); 
+	assert(source_offset != NULL); 
+
+	if (convert_from_network_endianness == true) {
+		assert(num_bytes == sizeof(uint32_t));
+
+		uint32_t network_bytes; 
+		memcpy(&network_bytes, source_buf + *source_offset, sizeof(uint32_t)); 
+		network_bytes = ntohl(network_bytes); 
+		memcpy(dest, &network_bytes, sizeof(uint32_t)); 
+	} else {
+		memcpy(dest, source_buf + *source_offset, num_bytes); 
+	}
+
+	*source_offset += num_bytes;
+
+}
+
 static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payload_len) {
     /**
      * This function interprets the payload of an open RPC from the client into local arguments, passes those local 
@@ -156,26 +190,35 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
      */
 
     //[flags, 4][mode, 4][path_len, 4][pathname, path_len]
-    if (payload_len < 12) {
+    if (payload_len < sizeof(int) + sizeof(int) + sizeof(uint32_t)) {
         fprintf(stderr, "Open payload too short in server.c: %u\n", payload_len);
         return -1;
     }
 
+    /*
     uint32_t flags_network, mode_network, pathlen_network; 
-    memcpy(&flags_network, payload + 0, 4); 
-    memcpy(&mode_network, payload + 4, 4);
-    memcpy(&pathlen_network, payload + 8, 4); 
+
+    memcpy(&flags_network, payload, sizeof(int)); 
+    memcpy(&mode_network, payload + sizeof(int), sizeof(int));
+    memcpy(&pathlen_network, payload + sizeof(int) + sizeof(int), sizeof(uint32_t)); 
     
     uint32_t flags = ntohl(flags_network);
     uint32_t mode = ntohl(mode_network);
     uint32_t pathlen = ntohl(pathlen_network);
+    */
 
-    if ((uint32_t)12 + pathlen != payload_len) {
+    size_t copy_offset = 0; 
+    uint32_t flags, mode, pathlen; 
+    copy_out(&flags, payload, sizeof(uint32_t), true, &copy_offset); 
+    copy_out(&mode, payload, sizeof(uint32_t), true, &copy_offset);
+    copy_out(&pathlen, payload, sizeof(uint32_t), true, &copy_offset); 
+
+    if ((uint32_t)(sizeof(int) + sizeof(int) + sizeof(uint32_t)) + pathlen != payload_len) {
         fprintf(stderr, "OPEN payload mismatch: payload_len is %u, pathlen is %u \n", payload_len, pathlen);
         return -1;
     }
 
-    const char* pathname = (const char*)(payload+12);
+    const char* pathname = (const char*)(payload+ (sizeof(int) + sizeof(int) + sizeof(uint32_t)));
     if (pathlen == 0 || pathname[pathlen - 1] != '\0') {
         fprintf(stderr, "OPEN pathname not NUL-terminated (pathlen=%u) \n", pathlen);
         return -1;
@@ -201,14 +244,14 @@ static int handle_open_payload(int sessfd, const uint8_t* payload, uint32_t payl
     uint32_t errno_network = htonl((uint32_t)ret_errno);
 
     // Open response: [fd, 4][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(8);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int) + sizeof(int));
     if (response_buf == NULL) {
         return -1; 
     }
-    memcpy(response_buf, &fd_network, 4);
-    memcpy(response_buf + 4, &errno_network, 4); 
+    memcpy(response_buf, &fd_network, sizeof(int));
+    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, 8) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -241,19 +284,19 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
      */
 
     // [server_fd, 4][n_bytes, 8][write_buf, n_bytes]
-    if (payload_len < 12) {
+    if (payload_len < sizeof(uint32_t) + sizeof(uint64_t)) {
         fprintf(stderr, "Write payload too short: %u \n", payload_len); 
         return -1; 
     }
 
     uint32_t server_fd_network; 
     uint64_t n_bytes; 
-    memcpy(&server_fd_network, payload, 4); 
-    memcpy(&n_bytes, payload + 4, 8);
+    memcpy(&server_fd_network, payload, sizeof(uint32_t)); 
+    memcpy(&n_bytes, payload + sizeof(uint32_t), sizeof(uint64_t));
 
     int32_t server_fd = (int32_t)ntohl(server_fd_network); 
 
-    if ((uint64_t)12 + n_bytes != (uint64_t)payload_len) {
+    if ((uint64_t)(sizeof(uint32_t) + sizeof(uint64_t)) + n_bytes != (uint64_t)payload_len) {
         fprintf(stderr, "WRITE payload mismatch: payload_len=%u n_bytes=%lu\n", payload_len, n_bytes);
         return -1;
     } else if (n_bytes > UINT32_MAX) {
@@ -266,7 +309,7 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
         fprintf(stderr, "malloc fails in write");
         return -1; 
     }
-    memcpy(write_bytes, payload + 12, n_bytes); 
+    memcpy(write_bytes, payload + sizeof(uint32_t) + sizeof(uint64_t), n_bytes); 
     ssize_t write_result = write(server_fd, write_bytes, n_bytes); 
     free(write_bytes); 
 
@@ -280,15 +323,15 @@ static int handle_write_payload(int sessfd, const uint8_t* payload, uint32_t pay
     uint32_t errno_network = htonl((uint32_t)ret_errno);
 
     // Write response: [result, 8][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(12);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(ssize_t) + sizeof(int));
     if (response_buf == NULL) {
         return -1; 
     }
     int64_t write_result_for_sending = (int64_t)write_result;
-    memcpy(response_buf, &write_result_for_sending, 8);
-    memcpy(response_buf + 8, &errno_network, 4); 
+    memcpy(response_buf, &write_result_for_sending, sizeof(ssize_t));
+    memcpy(response_buf + sizeof(ssize_t), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, 12) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(ssize_t) + sizeof(int)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -319,13 +362,13 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
      */
 
     //[fd, 4]
-    if (payload_len != 4) {
+    if (payload_len != sizeof(int)) {
         fprintf(stderr, "Wrong close payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t fd_network; 
-    memcpy(&fd_network, payload, 4); 
+    memcpy(&fd_network, payload, sizeof(uint32_t)); 
 
     int32_t server_fd = (int32_t)(ntohl(fd_network)); 
 
@@ -341,11 +384,11 @@ static int handle_close_payload(int sessfd, const uint8_t* payload, uint32_t pay
     uint32_t errno_network = htonl((uint32_t)close_errno);
 
     // Open response: [fd, 4][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(8);
-    memcpy(response_buf, &close_return_network, 4);
-    memcpy(response_buf + 4, &errno_network, 4); 
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int) + sizeof(int));
+    memcpy(response_buf, &close_return_network, sizeof(int));
+    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, 8) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -377,21 +420,21 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
      * 2. [errno, 4 bytes]
      */
 
-    if (payload_len != 16) {
+    if (payload_len != sizeof(int) + sizeof(off_t) + sizeof(int)) {
         fprintf(stderr, "Wrong lseek payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t fd_network; 
-    memcpy(&fd_network, payload, 4); 
+    memcpy(&fd_network, payload, sizeof(uint32_t)); 
     int server_fd = (int)(ntohl(fd_network)); 
 
     int64_t off_beamed; 
-    memcpy(&off_beamed, payload + 4, 8); 
+    memcpy(&off_beamed, payload + sizeof(uint32_t), sizeof(int64_t)); 
     off_t offset = (off_t)(off_beamed); 
 
     uint32_t whence_network; 
-    memcpy(&whence_network, payload + 12, 4); 
+    memcpy(&whence_network, payload + sizeof(uint32_t) + sizeof(int64_t), sizeof(uint32_t)); 
     int32_t whence = (int32_t)(ntohl(whence_network)); 
 
     fprintf(stderr, "SERVER lseek recv: server_fd=%d offset=%lld (0x%llx) whence=%d\n",
@@ -412,12 +455,12 @@ static int handle_lseek_payload(int sessfd, const uint8_t* payload, uint32_t pay
     uint32_t errno_network = htonl((uint32_t)lseek_errno);
 
     // lseek response: [offset, 8][errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(12);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int64_t) + sizeof(int));
     int64_t result_beamed = (int64_t)lseek_result; 
-    memcpy(response_buf, &result_beamed, 8);
-    memcpy(response_buf + 8, &errno_network, 4); 
+    memcpy(response_buf, &result_beamed, sizeof(int64_t));
+    memcpy(response_buf + sizeof(int64_t), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, 12) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(int64_t) + sizeof(int)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -450,27 +493,27 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
      */
 
     // [server_fd, 4][count, 8]
-    if (payload_len != 12) {
+    if (payload_len != sizeof(int) + sizeof(uint64_t)) {
         fprintf(stderr, "Wrong read payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t fd_network; 
-    memcpy(&fd_network, payload, 4); 
+    memcpy(&fd_network, payload, sizeof(uint32_t)); 
     int server_fd = (int)(ntohl(fd_network)); 
 
     uint64_t count_received; 
-    memcpy(&count_received, payload + 4, 8); 
+    memcpy(&count_received, payload + sizeof(uint32_t), sizeof(uint64_t)); 
     size_t count = (size_t)(count_received); 
 
     if (count == 0) {
         int64_t read_result = 0; 
         uint32_t errno_network = htonl(0); 
 
-        uint8_t* response = malloc(12); 
-        memcpy(response, &read_result, 8); 
-        memcpy(response + 8, &errno_network, 4); 
-        int rc = (send_all(sessfd, response, 12)); 
+        uint8_t* response = malloc(sizeof(uint64_t) + sizeof(uint32_t)); 
+        memcpy(response, &read_result, sizeof(uint64_t)); 
+        memcpy(response + sizeof(uint64_t), &errno_network, sizeof(uint32_t)); 
+        int rc = (send_all(sessfd, response, sizeof(uint32_t) + sizeof(uint64_t))); 
         free(response); 
         if (rc < 0) {
             return -1; 
@@ -503,21 +546,21 @@ static int handle_read_payload(int sessfd, const uint8_t* payload, uint32_t payl
     }
 
     // read response: [read_result, 8][errno_network, 4][read_buf, count]
-    uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + data_length);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(ssize_t) + sizeof(int) + data_length);
     if (response_buf == NULL) {
         free(response_buf);
         free(read_buf);
         return -1; 
     }
 
-    memcpy(response_buf, &result_beamed, 8);
-    memcpy(response_buf + 8, &errno_network, 4); 
+    memcpy(response_buf, &result_beamed, sizeof(ssize_t));
+    memcpy(response_buf + sizeof(ssize_t), &errno_network, sizeof(int)); 
     if (data_length > 0) {
-        memcpy(response_buf + 12, read_buf, data_length); 
+        memcpy(response_buf + sizeof(ssize_t) + sizeof(int), read_buf, data_length); 
     }
     
 
-    if (send_all(sessfd, response_buf, 8 + 4 + data_length) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(ssize_t) + sizeof(int) + data_length) < 0) {
         free(response_buf);
         free(read_buf);
         return -1;
@@ -553,13 +596,13 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
 
     //[path_length, 4][path, path_length]
 
-    if (payload_len < 4) {
+    if (payload_len < sizeof(uint32_t)) {
         fprintf(stderr, "Wrong stat payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t path_length_network; 
-    memcpy(&path_length_network, payload, 4); 
+    memcpy(&path_length_network, payload, sizeof(uint32_t)); 
     int path_length = (int)(ntohl(path_length_network)); 
 
     char* path = (char*)malloc(path_length); 
@@ -567,7 +610,7 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
         free(path); 
         return -1; 
     }
-    memcpy(path, payload + 4, path_length); 
+    memcpy(path, payload + sizeof(uint32_t), path_length); 
 
     struct stat st; 
     int stat_result = stat(path, &st); 
@@ -584,18 +627,17 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
     
 
     // [stat_result, 4][errno, 4][struct stat, sizeof(struct stat)] 
-    uint8_t* response_buf = (uint8_t*)malloc(4 + 4 + sizeof(struct stat)); 
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(int) + sizeof(int) + sizeof(struct stat)); 
     if (response_buf == NULL) {
         free(response_buf); 
         return -1; 
     }
 
-    memcpy(response_buf, &stat_result_network, 4); 
-    memcpy(response_buf + 4, &errno_network, 4); 
-    memcpy(response_buf + 8, &st, sizeof(struct stat)); 
+    memcpy(response_buf, &stat_result_network, sizeof(int)); 
+    memcpy(response_buf + sizeof(int), &errno_network, sizeof(int)); 
+    memcpy(response_buf + sizeof(int) + sizeof(int), &st, sizeof(struct stat)); 
 
-
-    if (send_all(sessfd, response_buf, 4 + 4 + sizeof(struct stat)) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(int) + sizeof(int) + sizeof(struct stat)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -628,20 +670,20 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
 
     //[path_length, 4][path, path_length]
 
-    if (payload_len < 4) {
+    if (payload_len < sizeof(uint32_t)) {
         fprintf(stderr, "Wrong stat payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t path_length_network; 
-    memcpy(&path_length_network, payload, 4); 
+    memcpy(&path_length_network, payload, sizeof(uint32_t)); 
     int path_length = (int)(ntohl(path_length_network)); 
 
     char* path = (char*)malloc(path_length); 
     if (path == NULL) {
         return -1; 
     }
-    memcpy(path, payload + 4, path_length); 
+    memcpy(path, payload + sizeof(uint32_t), path_length); 
 
     int unlink_result = unlink(path); 
 
@@ -658,16 +700,16 @@ static int handle_unlink_payload(int sessfd, const uint8_t* payload, uint32_t pa
     uint32_t errno_network = htonl((uint32_t)unlink_errno); 
     
     // read response: [unlink_result, 4][unlink_errno, 4]
-    uint8_t* response_buf = (uint8_t*)malloc(4 + 4);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(uint32_t) + sizeof(uint32_t));
     if (response_buf == NULL) {
         free(response_buf); 
         return -1; 
     }
 
-    memcpy(response_buf, &unlink_result_network, 4); 
-    memcpy(response_buf + 4, &errno_network, 4); 
+    memcpy(response_buf, &unlink_result_network, sizeof(uint32_t)); 
+    memcpy(response_buf + sizeof(uint32_t), &errno_network, sizeof(int)); 
 
-    if (send_all(sessfd, response_buf, 4 + 4) < 0) {
+    if (send_all(sessfd, response_buf, sizeof(uint32_t) + sizeof(int)) < 0) {
         free(response_buf);
         return -1;
     } else {
@@ -703,20 +745,20 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
 
     //[server_fd, 4][nbytes, 8][base, 8]
 
-    if (payload_len != 20) {
+    if (payload_len != sizeof(int) + sizeof(size_t) + sizeof(off_t)) {
         fprintf(stderr, "Wrong getdirentries payload size: %u\n", payload_len);
         return -1;
     }
 
     uint32_t server_fd_network; 
-    memcpy(&server_fd_network, payload, 4); 
+    memcpy(&server_fd_network, payload, sizeof(int)); 
     int server_fd = (int)(ntohl(server_fd_network)); 
 
     uint64_t nbytes; 
-    memcpy(&nbytes, payload + 4, 8); 
+    memcpy(&nbytes, payload + sizeof(int), sizeof(uint64_t)); 
 
     uint64_t base; 
-    memcpy(&base, payload + 12, 8); 
+    memcpy(&base, payload + sizeof(int) + sizeof(uint64_t), sizeof(off_t)); 
 
     char* getdirentries_buf; 
     if (nbytes > 0) {
@@ -754,7 +796,7 @@ static int handle_getdirentries_payload(int sessfd, const uint8_t* payload, uint
      *  [getdirentries_result, 8][getdirentries_errno, 4][new_base, 8][getdirentries_buf, data_length]
      *  
     */ 
-    uint8_t* response_buf = (uint8_t*)malloc(8 + 4 + 8 + data_length);
+    uint8_t* response_buf = (uint8_t*)malloc(sizeof(ssize_t) + sizeof(int) + sizeof(off_t) + data_length);
     if (response_buf == NULL) {
         free(basep); 
         free(getdirentries_buf); 
