@@ -58,10 +58,13 @@ enum {
 	OP_GETDIRTREE = 9 
 };
 
-void sigchld_handler(int sig) {
+void orphan_obliterator(int sig) {
     /**
      * This function handles the SIGCHLD signal, for when a forked child process has finished running, by reaping any 
      * child processes that have finished. 
+     * 
+     * A more appropriate name for this function would have been sigchld_handler. This naming is a tribute to a 
+     * deceased celebrity who I looked up to, Technoblade. 
      * 
      * Parameters: 
      *  - int sig: A dummy input, used to make sure this function fits a required template for handlers. 
@@ -617,13 +620,6 @@ static int handle_stat_payload(int sessfd, const uint8_t* payload, uint32_t payl
         return -1;
     }
 
-    /*
-    uint32_t path_length_network; 
-    memcpy(&path_length_network, payload, sizeof(uint32_t)); 
-    int path_length = (int)(ntohl(path_length_network)); 
-    */
-
-
 
     size_t copy_out_offset = 0; 
     int path_length; 
@@ -1168,7 +1164,7 @@ int main(int argc, char** argv) {
      * We also install the handler for the children for when they finish executing. 
      */
 
-    signal(SIGCHLD, sigchld_handler);
+    signal(SIGCHLD, orphan_obliterator);
 
     (void)argc;
     (void)argv;
